@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.db
+scripts/paypal/state/
+scripts/paypal/logs/
+data/
+.venv/
+.pytest_cache/

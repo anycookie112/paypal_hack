@@ -1,0 +1,5 @@
+@import "tailwindcss";
+@import "@heroui/styles";
+
+/* `dark:` follows the .dark class that useTheme puts on <html>. */
+@custom-variant dark (&:is(.dark *));
