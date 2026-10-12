@@ -1,4 +1,4 @@
-"""Base class for the app's AI agents, on top of Pydantic AI.
+"""Base class for the app's AI agents, on top of LangChain (models, messages) and LangGraph (the run loop).
 
 An agent is a subclass that declares what it is, and registers prompts and tools:
 
@@ -26,39 +26,44 @@ An agent is a subclass that declares what it is, and registers prompts and tools
     async for event in agent.stream("Party for 20 kids, $120", deps=deps):  # streamed output
         ...
 
-The Pydantic AI agent is built on first use (`initialize()`), so prompts, tools and handovers can
-also be registered at runtime with `register_prompt`, `register_tool` and `handover_to` until then.
+Each agent compiles to a LangGraph graph that loops until the model gives a final answer:
+
+    START -> model -> tools -> model -> tools -> ... -> END
+
+`model` calls the LLM with the agent's instructions and tools. `tools` acts on its reply: runs the
+tool calls, checks a final answer (its schema, then the validators), or ends the run on a handover.
+Anything wrong goes back to the model to fix, up to `retries` times. The run's `RunContext` (deps and
+usage) is the graph's runtime context, and it's what tools, dynamic prompts and validators get as `ctx`.
+
+The graph is built on first use (`initialize()`), so prompts, tools and handovers can also be
+registered at runtime with `register_prompt`, `register_tool` and `handover_to` until then.
 
 A handover passes the conversation to another agent, which produces the final output in its place:
 `triage.handover_to(order_agent)` lets the triage agent decide "this is an order" and hand over.
-The model only makes the decision (by calling a handover output tool with a brief); this class then
-runs the target, so the target's events stream live.
+The model only makes the decision (by calling a handover tool with a brief); this class then runs
+the target, so the target's events stream live.
+
+Final answers that aren't plain text come back through an output tool ("final_result") whose
+arguments are the output type's schema, so the model can use tools and answer in the same run.
 """
 
+import inspect
+import json
+import re
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Generic, Literal, TypeVar
+from typing import Annotated, Any, ClassVar, Generic, Literal, TypedDict, TypeVar, get_origin, get_type_hints
 
-from pydantic_ai import (
-    Agent,
-    ModelSettings,
-    AgentRunResultEvent,
-    FunctionToolCallEvent,
-    FunctionToolResultEvent,
-    ModelMessage,
-    PartDeltaEvent,
-    PartStartEvent,
-    RunContext,
-    RunUsage,
-    TextPart,
-    TextPartDelta,
-    Tool,
-    ToolOutput,
-    UsageLimits,
-)
-from pydantic_ai.exceptions import AgentRunError
+import openai
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from langgraph.errors import GraphRecursionError
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.runtime import Runtime
+from pydantic import BaseModel, Field, ValidationError, create_model
 from pydantic_core import to_jsonable_python
-from pydantic_ai.models import Model
 
 from app.ai import prompts
 from app.ai.model import AgentError, default_model
@@ -69,6 +74,33 @@ OutputT = TypeVar("OutputT")
 _TOOL_MARK = "__agent_tool__"
 _PROMPT_MARK = "__agent_prompt__"
 _VALIDATOR_MARK = "__agent_validator__"
+
+OUTPUT_TOOL = "final_result"
+
+
+class ModelRetry(Exception):
+    """Raise in a tool or validator to send the message back to the model so it can fix its call or answer."""
+
+
+@dataclass
+class Usage:
+    requests: int = 0      # model calls
+    tool_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    def add(self, reply: AIMessage) -> None:
+        self.requests += 1
+        if reply.usage_metadata:
+            self.input_tokens += reply.usage_metadata.get("input_tokens", 0)
+            self.output_tokens += reply.usage_metadata.get("output_tokens", 0)
+
+
+@dataclass
+class RunContext(Generic[DepsT]):
+    """What tools, dynamic prompts and validators get as `ctx`: the run's deps, and its usage so far."""
+    deps: DepsT
+    usage: Usage = field(default_factory=Usage)
 
 
 def agent_tool(func: Callable | None = None, *, name: str | None = None, retries: int | None = None):
@@ -81,7 +113,7 @@ def agent_tool(func: Callable | None = None, *, name: str | None = None, retries
 
 
 def agent_prompt(func: Callable) -> Callable:
-    """Mark a method as instructions computed for every run, e.g. from `ctx.deps`."""
+    """Mark a method as instructions computed for every request, e.g. from `ctx.deps`."""
     setattr(func, _PROMPT_MARK, True)
     return func
 
@@ -97,8 +129,8 @@ def agent_validator(func: Callable) -> Callable:
 class AgentResult(Generic[OutputT]):
     output: OutputT
     handled_by: str  # the agent that produced the output; differs from the one called after a handover
-    messages: list[ModelMessage]
-    usage: RunUsage
+    messages: list[BaseMessage]
+    usage: Usage
     prompt_id: str = ""  # the prompt version that produced it, e.g. "order_builder@v1"
 
 
@@ -120,7 +152,7 @@ class StreamEvent:
 
 @dataclass
 class _Handover:
-    """What a handover output tool returns: this agent's run ends and `target` takes over."""
+    """How a run that handed over ends: `target` takes over with the model's brief."""
     target: "BaseAgent"
     brief: str
 
@@ -128,10 +160,100 @@ class _Handover:
         return f"{self.brief}\n\nThe user's original message:\n{original}"
 
 
-def _skip_handovers(validator: Callable) -> Callable:
-    def validate(ctx: RunContext[Any], output: Any) -> Any:
-        return output if isinstance(output, _Handover) else validator(ctx, output)
-    return validate
+# --- tools -----------------------------------------------------------------------------------------
+
+def _parse_docstring(doc: str | None) -> tuple[str, dict[str, str]]:
+    """A Google-style docstring's description, and its `Args:` descriptions by name."""
+    description, args = [], {}
+    in_args, indent, current = False, None, None
+    for line in inspect.cleandoc(doc or "").splitlines():
+        if line.strip() in ("Args:", "Arguments:"):
+            in_args = True
+            continue
+        if not in_args:
+            description.append(line)
+        elif not line.strip():
+            continue
+        elif not line.startswith(" "):
+            in_args = False  # the next section, e.g. "Returns:"
+        else:
+            line_indent = len(line) - len(line.lstrip())
+            match = re.match(r"(\w+)(?: \(.*?\))?:\s*(.*)", line.strip())
+            if match and (indent is None or line_indent == indent):
+                indent, current = line_indent, match.group(1)
+                args[current] = match.group(2)
+            elif current:
+                args[current] += " " + line.strip()
+    return "\n".join(description).strip(), args
+
+
+def _takes_ctx(param: inspect.Parameter | None, hint: Any) -> bool:
+    return param is not None and (param.name == "ctx" or hint is RunContext or get_origin(hint) is RunContext)
+
+
+@dataclass
+class _Tool:
+    """A function the model can call: its JSON schema for the model, and how to call it."""
+    name: str
+    func: Callable
+    schema: type[BaseModel]
+    description: str
+    takes_ctx: bool
+    max_retries: int | None = None
+
+    @classmethod
+    def from_function(cls, func: Callable, *, name: str | None = None, description: str | None = None,
+                      retries: int | None = None) -> "_Tool":
+        name = name or func.__name__
+        params = list(inspect.signature(func).parameters.values())
+        hints = get_type_hints(func, include_extras=True)
+        takes_ctx = _takes_ctx(params[0] if params else None, hints.get(params[0].name) if params else None)
+        doc_description, arg_docs = _parse_docstring(func.__doc__)
+        fields = {
+            p.name: (hints.get(p.name, Any), Field(... if p.default is p.empty else p.default,
+                                                    description=arg_docs.get(p.name)))
+            for p in params[1 if takes_ctx else 0:]
+        }
+        return cls(name, func, create_model(name, **fields), description or doc_description, takes_ctx, retries)
+
+    def spec(self) -> dict:
+        tool = convert_to_openai_tool(self.schema)
+        tool["function"].update(name=self.name, description=self.description)
+        return tool
+
+    async def call(self, ctx: RunContext, args: dict) -> Any:
+        """Validate the model's arguments and call the function. Raises ValidationError or ModelRetry."""
+        parsed = self.schema.model_validate(args)
+        kwargs = {name: getattr(parsed, name) for name in type(parsed).model_fields}
+        result = self.func(ctx, **kwargs) if self.takes_ctx else self.func(**kwargs)
+        return await result if inspect.isawaitable(result) else result
+
+
+def _as_text(result: Any) -> str:
+    return result if isinstance(result, str) else json.dumps(to_jsonable_python(result), ensure_ascii=False)
+
+
+def _error_text(exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        errors = exc.errors(include_url=False, include_context=False)
+        return f"{len(errors)} validation error(s): {json.dumps(errors, default=str)}"
+    return str(exc)
+
+
+async def _call_with_optional_ctx(func: Callable, ctx: RunContext, *args: Any) -> Any:
+    takes_ctx = len(inspect.signature(func).parameters) > len(args)
+    result = func(ctx, *args) if takes_ctx else func(*args)
+    return await result if inspect.isawaitable(result) else result
+
+
+# --- the agent -------------------------------------------------------------------------------------
+
+class _State(TypedDict):
+    messages: Annotated[list[AnyMessage], add_messages]
+    retries: dict[str, int]  # failed attempts so far, per tool and for the final output
+    done: bool
+    output: Any
+    handover: _Handover | None
 
 
 class BaseAgent(Generic[DepsT, OutputT]):
@@ -151,8 +273,8 @@ class BaseAgent(Generic[DepsT, OutputT]):
     max_reply_tokens: ClassVar[int] = 2000 # length of one model reply
     parallel_tool_calls: ClassVar[bool] = False  # one call per reply: the model sees each result before the next
 
-    def __init__(self, *, model: Model | None = None, prompt_version: int | None = None):
-        """`model` overrides the configured LLM (tests pass Pydantic AI's TestModel or FunctionModel).
+    def __init__(self, *, model: BaseChatModel | None = None, prompt_version: int | None = None):
+        """`model` overrides the configured LLM (tests pass a fake chat model).
         `prompt_version` pins a version of the agent's prompt instead of the latest."""
         self._model = model
         self._prompts: list[str | Callable] = []
@@ -163,10 +285,10 @@ class BaseAgent(Generic[DepsT, OutputT]):
             self.prompt_id = versioned.id
         if self.instructions:
             self._prompts.append(self.instructions)
-        self._tools: list[Tool] = []
-        self._handovers: list[ToolOutput] = []
+        self._tools: list[_Tool] = []
+        self._handovers: dict[str, _Tool] = {}  # handover tool name -> tool returning a _Handover
         self._validators: list[Callable] = []
-        self._agent: Agent | None = None
+        self._graph = None
         self._register_marked_methods()
         self.setup()
 
@@ -184,7 +306,7 @@ class BaseAgent(Generic[DepsT, OutputT]):
                       retries: int | None = None) -> None:
         """Let the model call `func`. Parameters become the tool's schema; the docstring its description."""
         self._check_not_initialized()
-        self._tools.append(Tool(func, name=name, description=description, max_retries=retries))
+        self._tools.append(_Tool.from_function(func, name=name, description=description, retries=retries))
 
     def register_validator(self, func: Callable) -> None:
         """Check the final output with `func(ctx, output) -> output`; raise ModelRetry to make the model fix it.
@@ -203,16 +325,16 @@ class BaseAgent(Generic[DepsT, OutputT]):
             raise TypeError(f"{target.name} needs {target.deps_type.__name__} deps, "
                             f"but {self.name} has {getattr(self.deps_type, '__name__', self.deps_type)}")
 
-        def handover(brief: str) -> Any:  # a _Handover; Any because it has no JSON schema
+        def handover(brief: str) -> _Handover:
             """
             Args:
                 brief: What the next agent needs to know: the request and anything already established.
             """
             return _Handover(target, brief)
 
-        self._handovers.append(ToolOutput(
-            handover, name=name or f"handover_to_{target.name}",
-            description=description or f"Hand over to the {target.name} agent: {target.description}"))
+        tool = _Tool.from_function(handover, name=name or f"handover_to_{target.name}",
+                                   description=description or f"Hand over to the {target.name} agent: {target.description}")
+        self._handovers[tool.name] = tool
 
     def _register_marked_methods(self) -> None:
         marked: dict[str, Callable] = {}
@@ -235,85 +357,187 @@ class BaseAgent(Generic[DepsT, OutputT]):
         return [t.name for t in self._tools]
 
     def _check_not_initialized(self) -> None:
-        if self._agent is not None:
+        if self._graph is not None:
             raise RuntimeError(f"{self.name} is already initialized; register prompts, tools and handovers first")
+
+    # --- the graph -------------------------------------------------------------------------
+
+    @property
+    def _text_output(self) -> bool:
+        return self.output_type is str
+
+    def initialize(self):
+        """Build the LangGraph graph from everything registered. Runs automatically on first use."""
+        if self._graph is not None:
+            return self._graph
+        if self._text_output:
+            self._output_tool = None
+        else:
+            # The output tool's arguments are the output type's fields, or {"response": ...} for other types.
+            schema = (self.output_type if isinstance(self.output_type, type) and issubclass(self.output_type, BaseModel)
+                      else create_model(OUTPUT_TOOL, response=(self.output_type, ...)))
+            self._output_tool = _Tool(OUTPUT_TOOL, lambda **kwargs: None, schema,
+                                      "The final response, which ends the conversation.", takes_ctx=False)
+        callable_tools = [*self._tools, *self._handovers.values(), *([self._output_tool] if self._output_tool else [])]
+        settings: dict[str, Any] = {"max_tokens": self.max_reply_tokens}
+        if self._tools and not self.parallel_tool_calls:
+            settings["parallel_tool_calls"] = False
+        if not self._text_output:
+            settings["tool_choice"] = "required"  # a text reply can't be the answer, so always call a tool
+        llm = self._model or default_model()
+        self._llm = llm.bind_tools([t.spec() for t in callable_tools], **settings) if callable_tools else llm.bind(**settings)
+
+        graph = StateGraph(_State, context_schema=RunContext)
+        graph.add_node("model", self._call_model)
+        graph.add_node("tools", self._act)
+        graph.add_edge(START, "model")
+        graph.add_edge("model", "tools")
+        graph.add_conditional_edges("tools", lambda s: END if s["done"] or s["handover"] else "model", ["model", END])
+        self._graph = graph.compile(name=self.name)
+        return self._graph
+
+    async def _instructions(self, ctx: RunContext) -> str:
+        parts = [p if isinstance(p, str) else await _call_with_optional_ctx(p, ctx) for p in self._prompts]
+        return "\n\n".join(p for p in parts if p)
+
+    async def _call_model(self, state: _State, runtime: Runtime[RunContext]) -> dict:
+        ctx = runtime.context
+        if ctx.usage.requests >= self.max_requests:
+            raise AgentError(f"{self.name}: the limit of {self.max_requests} model requests was reached")
+        instructions = await self._instructions(ctx)
+        messages = [SystemMessage(instructions), *state["messages"]] if instructions else state["messages"]
+        reply = await self._llm.ainvoke(messages)
+        ctx.usage.add(reply)
+        return {"messages": [reply]}
+
+    async def _act(self, state: _State, runtime: Runtime[RunContext]) -> dict:
+        """Act on the model's reply: run its tool calls, accept a final answer, or hand over."""
+        ctx, write = runtime.context, runtime.stream_writer
+        reply: AIMessage = state["messages"][-1]
+        retries = dict(state["retries"])
+
+        def retry(key: str, limit: int) -> None:
+            retries[key] = retries.get(key, 0) + 1
+            if retries[key] > limit:
+                what = "the final output" if key == OUTPUT_TOOL else f"tool {key!r}"
+                raise AgentError(f"{self.name}: exceeded the maximum of {limit} retries for {what}")
+
+        if reply.invalid_tool_calls:  # arguments that weren't valid JSON
+            for call in reply.invalid_tool_calls:
+                retry(call.get("name") or "unknown", self.retries)
+            return {"retries": retries, "messages": [
+                ToolMessage(f"Invalid arguments: {call.get('error') or 'not valid JSON'}. Fix the errors and try again.",
+                            tool_call_id=call.get("id") or "", status="error")
+                for call in reply.invalid_tool_calls
+            ] + [ToolMessage("Not executed: another call in this reply failed.", tool_call_id=call["id"])
+                 for call in reply.tool_calls]}
+
+        final = next((c for c in reply.tool_calls if c["name"] in self._handovers or c["name"] == OUTPUT_TOOL), None)
+        if final:
+            skipped = [ToolMessage("Not executed: a final result was already given.", tool_call_id=c["id"])
+                       for c in reply.tool_calls if c is not final]
+            try:
+                if final["name"] in self._handovers:
+                    handover = await self._handovers[final["name"]].call(ctx, final["args"])
+                    return {"handover": handover, "messages": [
+                        ToolMessage(f"Handed over to {handover.target.name}.", tool_call_id=final["id"]), *skipped]}
+                parsed = self._output_tool.schema.model_validate(final["args"])
+                output = parsed if parsed.__class__ is self.output_type else parsed.response
+                output = await self._validate(ctx, output)
+            except (ValidationError, ModelRetry) as exc:
+                retry(OUTPUT_TOOL, self.retries)
+                return {"retries": retries, "messages": [
+                    ToolMessage(f"{_error_text(exc)}\n\nFix the errors and try again.", tool_call_id=final["id"],
+                                status="error"), *skipped]}
+            return {"done": True, "output": output, "messages": [
+                ToolMessage("Final result processed.", tool_call_id=final["id"]), *skipped]}
+
+        if not reply.tool_calls:
+            if not self._text_output:
+                retry(OUTPUT_TOOL, self.retries)
+                return {"retries": retries, "messages": [HumanMessage(
+                    f"Plain text responses are not permitted, please include your response in a tool call "
+                    f"(the {OUTPUT_TOOL} tool, or a handover).")]}
+            try:
+                return {"done": True, "output": await self._validate(ctx, str(reply.text))}
+            except ModelRetry as exc:
+                retry(OUTPUT_TOOL, self.retries)
+                return {"retries": retries, "messages": [HumanMessage(f"{exc}\n\nFix the errors and try again.")]}
+
+        if ctx.usage.tool_calls + len(reply.tool_calls) > self.max_tool_calls:
+            raise AgentError(f"{self.name}: the limit of {self.max_tool_calls} tool calls was reached")
+        tools = {t.name: t for t in self._tools}
+        results = []
+        for call in reply.tool_calls:
+            ctx.usage.tool_calls += 1
+            write(StreamEvent("tool_call", self.name, name=call["name"], data=call["args"]))
+            tool = tools.get(call["name"])
+            try:
+                if tool is None:
+                    raise ModelRetry(f"Unknown tool {call['name']!r}. Tools: {', '.join(tools) or 'none'}")
+                result, status = await tool.call(ctx, call["args"]), "success"
+            except (ValidationError, ModelRetry) as exc:
+                retry(call["name"], tool.max_retries if tool and tool.max_retries is not None else self.retries)
+                result, status = f"{_error_text(exc)}\n\nFix the errors and try again.", "error"
+            write(StreamEvent("tool_result", self.name, name=call["name"], data=result))
+            results.append(ToolMessage(_as_text(result), tool_call_id=call["id"], name=call["name"], status=status))
+        return {"retries": retries, "messages": results}
+
+    async def _validate(self, ctx: RunContext, output: Any) -> Any:
+        for validator in self._validators:
+            output = await _call_with_optional_ctx(validator, ctx, output)
+        return output
 
     # --- running ---------------------------------------------------------------------------
 
-    def initialize(self) -> Agent:
-        """Build the Pydantic AI agent from everything registered. Runs automatically on first use."""
-        if self._agent is None:
-            output_type: Any = [self.output_type, *self._handovers] if self._handovers else self.output_type
-            self._agent = Agent(
-                self._model or default_model(),
-                name=self.name,
-                deps_type=self.deps_type,
-                output_type=output_type,
-                instructions=list(self._prompts) or None,
-                tools=self._tools,
-                retries=self.retries,
-                model_settings=ModelSettings(max_tokens=self.max_reply_tokens,
-                                             **({"parallel_tool_calls": False} if self._tools and not self.parallel_tool_calls else {})),
-            )
-            for validator in self._validators:
-                self._agent.output_validator(_skip_handovers(validator))
-        return self._agent
+    def _start(self, prompt: str, deps: Any, history: Sequence[BaseMessage] | None,
+               usage: Usage | None) -> tuple[Any, dict, dict]:
+        graph = self.initialize()
+        state = {"messages": [*(history or []), HumanMessage(prompt)], "retries": {}, "done": False,
+                 "output": None, "handover": None}
+        # Two steps (model, tools) per request; the request limit is checked first, with a clearer error.
+        options = {"context": RunContext(deps, usage or Usage()), "config": {"recursion_limit": 2 * self.max_requests + 10}}
+        return graph, state, options
 
-    def _limits(self) -> UsageLimits:
-        return UsageLimits(request_limit=self.max_requests, tool_calls_limit=self.max_tool_calls)
+    def _result(self, state: dict, usage: Usage) -> AgentResult[OutputT]:
+        return AgentResult(state["output"], self.name, state["messages"], usage, self.prompt_id)
 
-    async def run(self, prompt: str, *, deps: DepsT = None, history: Sequence[ModelMessage] | None = None,
-                  usage: RunUsage | None = None) -> AgentResult[OutputT]:
+    async def run(self, prompt: str, *, deps: DepsT = None, history: Sequence[BaseMessage] | None = None,
+                  usage: Usage | None = None) -> AgentResult[OutputT]:
         """Run to completion and return the final output."""
-        agent = self.initialize()
+        graph, state, options = self._start(prompt, deps, history, usage)
         try:
-            result = await agent.run(prompt, deps=deps, message_history=history, usage=usage,
-                                     usage_limits=self._limits())
-        except AgentRunError as exc:
+            state = await graph.ainvoke(state, **options)
+        except (GraphRecursionError, openai.APIError, TimeoutError) as exc:
             raise AgentError(f"{self.name}: {exc}") from exc
-        if isinstance(result.output, _Handover):
-            handover = result.output
-            return await handover.target.run(handover.prompt(prompt), deps=deps, usage=result.usage)
-        return AgentResult(result.output, self.name, result.all_messages(), result.usage, self.prompt_id)
+        if handover := state["handover"]:
+            return await handover.target.run(handover.prompt(prompt), deps=deps, usage=options["context"].usage)
+        return self._result(state, options["context"].usage)
 
-    async def stream(self, prompt: str, *, deps: DepsT = None, history: Sequence[ModelMessage] | None = None,
-                     usage: RunUsage | None = None) -> AsyncIterator[StreamEvent]:
+    async def stream(self, prompt: str, *, deps: DepsT = None, history: Sequence[BaseMessage] | None = None,
+                     usage: Usage | None = None) -> AsyncIterator[StreamEvent]:
         """Run and yield events as they happen: text as it's written, tool calls and results,
         handovers, and finally one "output" event carrying the AgentResult."""
-        agent = self.initialize()
-        handover, usage_so_far = None, None
+        graph, state, options = self._start(prompt, deps, history, usage)
         try:
-            async with agent.run_stream_events(prompt, deps=deps, message_history=history, usage=usage,
-                                               usage_limits=self._limits()) as events:
-                async for event in events:
-                    if isinstance(event, AgentRunResultEvent) and isinstance(event.result.output, _Handover):
-                        handover, usage_so_far = event.result.output, event.result.usage
-                        continue
-                    translated = self._translate(event)
-                    if translated:
-                        yield translated
-        except AgentRunError as exc:
+            async for mode, chunk in graph.astream(state, stream_mode=["messages", "custom", "values"], **options):
+                if mode == "values":
+                    state = chunk
+                elif mode == "custom":
+                    yield chunk  # tool calls and results, from _act
+                else:
+                    message, metadata = chunk
+                    if metadata.get("langgraph_node") == "model" and isinstance(message, AIMessage) and message.text:
+                        yield StreamEvent("text", self.name, text=str(message.text))
+        except (GraphRecursionError, openai.APIError, TimeoutError) as exc:
             raise AgentError(f"{self.name}: {exc}") from exc
 
-        if handover:
+        if handover := state["handover"]:
             yield StreamEvent("handover", self.name, name=handover.target.name, text=handover.brief)
-            async for event in handover.target.stream(handover.prompt(prompt), deps=deps, usage=usage_so_far):
+            async for event in handover.target.stream(handover.prompt(prompt), deps=deps, usage=options["context"].usage):
                 yield event
-
-    def _translate(self, event: Any) -> StreamEvent | None:
-        if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart) and event.part.content:
-            return StreamEvent("text", self.name, text=event.part.content)
-        if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-            return StreamEvent("text", self.name, text=event.delta.content_delta)
-        if isinstance(event, FunctionToolCallEvent):
-            return StreamEvent("tool_call", self.name, name=event.part.tool_name, data=event.part.args_as_dict())
-        if isinstance(event, FunctionToolResultEvent):
-            return StreamEvent("tool_result", self.name, name=event.part.tool_name, data=event.part.content)
-        if isinstance(event, AgentRunResultEvent):
-            result = AgentResult(event.result.output, self.name, event.result.all_messages(), event.result.usage,
-                                 self.prompt_id)
-            return StreamEvent("output", self.name, result=result)
-        return None
+        else:
+            yield StreamEvent("output", self.name, result=self._result(state, options["context"].usage))
 
     def __repr__(self) -> str:
         prompt = f" ({self.prompt_id})" if self.prompt_id else ""

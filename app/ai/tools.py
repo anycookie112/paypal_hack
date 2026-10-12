@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from datetime import date
 
 from pydantic import BaseModel
-from pydantic_ai import RunContext
 from sqlmodel import Session, select
 
+from app.ai.base import RunContext
 from app.domain.money import cents_to_str
 from app.domain.rules import describe_rule
 from app.models import Business, Product, Rule

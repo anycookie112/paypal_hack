@@ -54,15 +54,15 @@ app/
   models.py         Business, Product, Rule tables
   api/              JSON API under /api: meta, businesses, products, rules (one router each)
   domain/           business logic with no web or AI code: money, catalog (products, CSV), rules
-  ai/               everything AI, on Pydantic AI
+  ai/               everything AI, on LangChain + LangGraph
     model.py          LLM connection (any OpenAI-compatible endpoint)
-    base.py           BaseAgent: prompts, tools, normal + streamed output, handovers
+    base.py           BaseAgent: prompts, tools, normal + streamed output, handovers (one LangGraph graph per agent)
     prompts.py        every prompt, versioned (pin with PROMPT_VERSIONS=front_desk=1)
     tools.py          read-only tools over one shop's data
     agents.py         customer agents: front desk -> order builder
     onboarding.py     pasted menu / policies -> drafts (Advanced setup)
 frontend/           React 19 + TypeScript + HeroUI v3 + Tailwind v4 (Vite)
-tests/              pytest (fake AI models, throwaway database)
+tests/              pytest (fake chat model, throwaway database)
 scripts/
   paypal/           sandbox experiments: holds/captures/refunds, paying a third-party business
   kroger/           Kroger API explorer; builds a real test catalog into data/

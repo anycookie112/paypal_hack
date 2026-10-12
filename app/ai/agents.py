@@ -12,11 +12,10 @@ before the customer sees a cart.
 from datetime import date
 from typing import Generic, TypeVar
 
+from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field
-from pydantic_ai import ModelRetry, RunContext
-from pydantic_ai.models import Model
 
-from app.ai.base import BaseAgent, agent_prompt, agent_validator
+from app.ai.base import BaseAgent, ModelRetry, RunContext, agent_prompt, agent_validator
 from app.ai.tools import SHOP_TOOLS, CartLine, ShopDeps, plan_for_cart, shop_info, shop_policies
 from app.domain.money import cents_to_str
 from app.payments.plan import PlanError
@@ -89,7 +88,7 @@ class OrderBuilder(ShopAgent[OrderProposal]):
         return output
 
 
-def customer_assistant(*, model: Model | None = None) -> FrontDesk:
+def customer_assistant(*, model: BaseChatModel | None = None) -> FrontDesk:
     """The front desk, able to hand over to the order builder."""
     front_desk = FrontDesk(model=model)
     front_desk.handover_to(OrderBuilder(model=model))

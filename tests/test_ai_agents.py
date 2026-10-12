@@ -1,11 +1,9 @@
-"""Prompts, tools and the customer agents, with fake models (no network)."""
+"""Prompts, tools and the customer agents, with a fake chat model (no network)."""
 
 import asyncio
 from types import SimpleNamespace
 
 import pytest
-from pydantic_ai import ModelResponse, TextPart, ToolCallPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlmodel import Session, select
 
 from app.ai import prompts
@@ -13,6 +11,7 @@ from app.ai.agents import FrontDesk, OrderBuilder, OrderProposal, customer_assis
 from app.ai.tools import ShopDeps, get_product, list_categories, search_products, shop_policies
 from app.db import engine
 from app.models import Business, Product, Rule
+from tests.fakes import FakeChatModel, call, tool_names
 
 BAKERY = Business(id=1, slug="sweet-crumb", name="Sweet Crumb", kind="bakery", paypal_email="b@example.com")
 PRODUCTS = [
@@ -50,11 +49,11 @@ def test_versions_are_append_only():
 def test_agent_uses_and_records_its_prompt_version():
     seen = {}
 
-    def model(messages, info: AgentInfo):
-        seen["instructions"] = info.instructions
-        return ModelResponse(parts=[TextPart("hello")])
+    def respond(messages, tools):
+        seen["instructions"] = messages[0].content
+        return "hello"
 
-    result = asyncio.run(FrontDesk(model=FunctionModel(model), prompt_version=1).run("hi", deps=DEPS))
+    result = asyncio.run(FrontDesk(model=FakeChatModel(respond=respond), prompt_version=1).run("hi", deps=DEPS))
     assert result.prompt_id == "front_desk@v1"
     assert prompts.get("front_desk", 1).text in seen["instructions"]
     assert "Never guess" not in seen["instructions"]  # only in v2
@@ -100,14 +99,12 @@ def test_shop_deps_load_only_active_products(client, bakery):
 # --- customer assistant --------------------------------------------------------------------------
 
 def test_front_desk_hands_ordering_to_order_builder():
-    def model(messages, info: AgentInfo):
-        names = [t.name for t in info.output_tools]
-        if "handover_to_order_builder" in names:
-            return ModelResponse(parts=[ToolCallPart("handover_to_order_builder", {"brief": "Party for 20 kids"})])
-        proposal = {"lines": [{"product_id": 1, "quantity": 2}], "explanation": "Two dozen cupcakes."}
-        return ModelResponse(parts=[ToolCallPart(names[0], proposal)])
+    def respond(messages, tools):
+        if "handover_to_order_builder" in tool_names(tools):
+            return call("handover_to_order_builder", {"brief": "Party for 20 kids"})
+        return call("final_result", {"lines": [{"product_id": 1, "quantity": 2}], "explanation": "Two dozen cupcakes."})
 
-    result = asyncio.run(customer_assistant(model=FunctionModel(model)).run("Party for 20 kids", deps=DEPS))
+    result = asyncio.run(customer_assistant(model=FakeChatModel(respond=respond)).run("Party for 20 kids", deps=DEPS))
     assert result.handled_by == "order_builder" and result.prompt_id.startswith("order_builder@v")
     assert isinstance(result.output, OrderProposal) and result.output.lines[0].product_id == 1
 
@@ -123,14 +120,10 @@ def test_empty_search_tells_the_model_not_to_assume_tags():
 
 
 def test_agents_cap_reply_length_and_parallel_tool_calls():
-    seen = {}
-
-    def model(messages, info: AgentInfo):
-        seen.update(info.model_settings or {})
-        return ModelResponse(parts=[TextPart("hi")])
-
-    asyncio.run(FrontDesk(model=FunctionModel(model)).run("hi", deps=DEPS))
-    assert seen["max_tokens"] == FrontDesk.max_reply_tokens and seen["parallel_tool_calls"] is False
+    model = FakeChatModel(respond=lambda messages, tools: "hi")
+    asyncio.run(FrontDesk(model=model).run("hi", deps=DEPS))
+    settings = model.calls[0]
+    assert settings["max_tokens"] == FrontDesk.max_reply_tokens and settings["parallel_tool_calls"] is False
 
 
 def test_stream_events_serialize_tool_results():
@@ -169,10 +162,10 @@ def proposal_model(*outputs):
     """A fake order builder that returns `outputs` in turn, recording what it's told after each."""
     told = []
 
-    def model(messages, info: AgentInfo):
-        told.append(messages[-1].parts[-1])
-        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, outputs[len(told) - 1])])
-    return FunctionModel(model), told
+    def respond(messages, tools):
+        told.append(messages[-1])
+        return call("final_result", outputs[len(told) - 1])
+    return FakeChatModel(respond=respond), told
 
 
 def test_order_check_makes_the_model_fix_unknown_products_and_budget():
