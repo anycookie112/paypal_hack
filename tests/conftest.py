@@ -22,11 +22,3 @@ def client():
     init_db()
     with TestClient(app) as c:
         yield c
-
-
-@pytest.fixture
-def bakery(client):
-    r = client.post("/api/businesses", json={"name": "Sweet Crumb Bakery", "kind": "bakery",
-                                             "paypal_email": "bakery@example.com"})
-    assert r.status_code == 201
-    return r.json()["slug"]

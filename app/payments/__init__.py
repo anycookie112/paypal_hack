@@ -1,1 +1,1 @@
-"""Payments through PayPal: the client, how an order is paid (plan), and the steps (service)."""
+"""Payments through PayPal: the REST client (Checkout top-ups, Payouts reimbursements)."""

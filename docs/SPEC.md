@@ -135,8 +135,18 @@ mentions the recent purchase ("Sam restocked coffee Monday: is it in the kitchen
 - **Real-world question (later):** a multi-company service would need each company to connect its own PayPal account
   (partner onboarding) rather than the platform holding company money.
 - **Payouts in live** needs PayPal to enable it on the account; sandbox is enough for the hackathon.
-- [ ] **First experiment** (`scripts/paypal/payouts.py`): sandbox payout to a sandbox personal account; an unclaimed
-  payout to an unregistered email, then cancel it; check statuses and fees.
+- [x] **Tested 2026-10-12 (`scripts/paypal/payouts.py`):** the sandbox app already has the Payouts scope.
+  - $24.50 to a sandbox personal account: `PENDING → PROCESSING → SUCCESS` in **~28 s**. Fee **$0.53**, charged
+    to the sender (batch `fees`), not deducted from the employee.
+  - $5.00 to an email with no PayPal account: the **batch says SUCCESS but the item is UNCLAIMED** (fee $0.11).
+    Cancelled → item `RETURNED`. So **always check the item's status**, never just the batch's.
+  - Cancelling the successful payout: refused, `ITEM_INCORRECT_STATUS: Only items in Unclaimed status can be
+    cancelled.` Confirms the waiting period must live in our app.
+  - Resending the same `sender_batch_id`: rejected (`Batch with given sender_batch_id already exists`, with a link
+    to the original batch). So use the claim's id as `sender_batch_id`: a retry can never pay twice, and the error
+    points to the batch that already went out.
+  - Balance API (`/v1/reporting/balances`): 403, the app lacks the reporting scope. Not needed: our ledger tracks the
+    budget. Unknown: whether the fee on a cancelled unclaimed payout is refunded.
 
 ## 8. AI agents
 
@@ -246,8 +256,12 @@ different model (`BaseAgent(model=...)`), so the receipt reader can switch provi
 
 ## 9. Chat and feed
 
-- **Now:** a simple web chat and a feed page in the existing React app.
-- **Later:** Slack / Teams. Requests by DM, and feed posts in a channel, where people already are.
+- **First: the web app** (the existing React app): chat, feed, approvals, admin setup. Easier to debug, and judges
+  can always try it.
+- **Then: Slack** for employees and approvers: DM the bot, approve with buttons, feed posts in `#office-fund`,
+  👍 reactions, receipts dropped in the DM, Slack user id = who's talking. Admin setup, the ledger and PayPal top-ups
+  stay on the web. Teams later, the same way.
+- Adding Slack should take days, not weeks, because the core never depends on the web (§14).
 
 ## 10. From the current codebase
 
@@ -278,7 +292,158 @@ accounting / tax exports; multi-currency; inventory sensors; real money.
 ## 13. Open decisions
 
 1. Product name
-2. Pivot fully, or keep the order assistant code around until the new flow works?
-3. Vision-capable model for receipts (and the provider for the final demo, given Atria's speed)
-4. How the feed is confirmed: 👍 reactions count as confirmation, or only reports matter?
-5. Team size and skills
+2. Vision-capable model for receipts (and the provider for the final demo, given Atria's speed)
+3. How the feed is confirmed: 👍 reactions count as confirmation, or only reports matter?
+4. Team size and skills
+5. **Assumed, to confirm:** one office-desk agent with action tools (`submit_request`, `report_problem`) instead of
+   handovers to a request agent and check-in agent (fewer model calls, the desk keeps the conversation). §8 will be
+   updated once confirmed.
+6. **Decided:** web sign-in is a **"View as" switcher** built for testing, no passwords or PIN: a dropdown in the
+   header lists the demo members (employees, an approver, the admin); `?as=sam` in the URL opens the app as Sam, so
+   two tabs can be two people; the browser sends the member id with each API call, and API tests set it directly.
+   Demo-only (anyone can be anyone); Slack later gives real identity through the Slack user id.
+
+## 14. Architecture: a core that doesn't know about the web
+
+Everything that decides or moves money lives in `app/core/`, as plain functions over the database. The web API
+(and later Slack) are thin layers that call them. Rules:
+
+1. **Members, not sessions.** Core functions take a `Member`; members can carry external ids (`slack_user_id`).
+2. **Replies are data.** The core returns text plus typed cards (`{"type": "approved", "item": ..., "cap": ...}`);
+   React renders them now, Slack Block Kit later.
+3. **Every action is a function by id:** `approve(request_id, by=member)`, `report(post_id, by=member, text)`. A
+   web button and a Slack button call the same thing.
+4. **Events, not pages.** The core records notifications ("tell Sam his claim was paid") and feed posts; the web
+   shows them in lists, Slack will send DMs and channel posts.
+5. **Files are bytes.** Receipts come in as bytes + filename, from a browser upload or a Slack file download.
+6. **Slow work runs in the background.** AI calls and payouts never block a request (Slack wants an answer in 3 s).
+7. **Conversations have ids.** A web chat tab and a Slack DM or thread are both just a `conversation_id`.
+
+```
+app/
+  core/          settings, decisions, claims, payouts, feed, notifications (later: conversation)
+  ai/            BaseAgent (kept) + the new agents (week 3)
+  payments/      PayPal client: Orders (top-ups) + Payouts
+  api/           FastAPI routes for the web app: thin, call app/core
+  models.py      the tables below
+frontend/        React: employee pages + admin pages
+```
+
+### 14.1 Database
+
+SQLite through SQLModel (`app/db.py`, already set up), one file at `data/app.db`.
+
+```
+Company ─┬─ Member ──────────────┐
+         ├─ Category ─ Item       │
+         └─ Setting               │
+                                  ▼
+Request (member, item?) ─▶ Claim (receipt) ─▶ Payout (PayPal ids)
+                              │
+                              ├─ FeedPost ─ Reaction, Report
+                              └─ LedgerEntry, Notification
+```
+
+| Table | Key fields | Answers |
+|---|---|---|
+| **Company** | name, currency, monthly budget | The budget everything draws from |
+| **Member** | name, email, PayPal email, role (employee / approver / admin), Slack user id (later) | Who's who; where payouts go |
+| **Category** | name, monthly budget | "Pantry: $112 of $250 left" |
+| **Item** | name, other names ("Nescafé", "coffee pods"), category, cap, usual restock days, proof needed, active | The common-items list |
+| **Setting** | kind, params (closed set, §5) | Limits, waiting period, ceiling, feed options |
+| **Request** | member, item (empty = uncommon), description, quantity, estimate, reason, status, decision reasons, decided by + when, approved cap | Who asked for what, and why it was approved |
+| **Claim** | request, member, receipt file + fingerprint (hash), store, receipt date, total, the AI's reading, item photo, status, payout due date | **Who bought what, and when.** A purchase is an accepted claim: no separate purchases table. |
+| **Payout** | claim, `sender_batch_id` (= claim id), PayPal batch + item ids, amount, fee, item status | Where each reimbursement stands in PayPal |
+| **LedgerEntry** | kind (top-up, payout, fee, returned), amount (+ / −), claim or payout, PayPal reference | Budget balance = the sum; the full money trail |
+| **FeedPost / Reaction / Report** | one post per purchase; 👍 by whom; reports with status and resolution | The feed and the "something's wrong" path |
+| **Notification** | member, kind, details, read or not | "Your claim was paid", approver alerts (Slack DMs later) |
+| **AgentLog** | conversation, tool calls, decisions | Why the bot did what it did (§14.2) |
+
+**History questions, all from Claim + Member + Item:**
+- Who bought what: accepted claims with member and item, newest first.
+- When an item was last bought: the latest receipt date per item ("Coffee: 2 days ago, by Sam").
+- "Too soon": last purchase + the item's restock days > today → not auto-approved.
+- Real restock interval: the average gap between purchases of an item (later: "coffee lasts 10 days, not 14").
+- Per person this month: the sum of their claims (monthly limit, trust levels).
+
+**Practical choices:**
+- No migrations during the hackathon: when tables change, delete `data/app.db` and rerun the seed script.
+- **Seed script:** a demo company, 3–4 members on sandbox personal accounts, starter categories and items, and
+  **some past purchases**, so history and "too soon" work from the first minute of the demo.
+- **Deployed:** Render's free disk is wiped on every deploy and judging runs into December, so use a free hosted
+  Postgres (e.g. Neon or Supabase): only `DATABASE_URL` changes. Check current free-tier limits when deploying.
+
+### 14.2 Agent safety (borrowed from AI coding harnesses)
+
+- **Permission levels:** reading tools are free; action tools (`submit_request`, `report_problem`) only do what the
+  employee could do with a button; approving and paying are **never** tools.
+- **A hook on every action:** each action tool goes through the decision engine first; it can't be skipped.
+- **Untrusted input:** chat messages, receipt text and tool results are data, never instructions.
+- **Limits:** model calls, tool calls and reply length per run (already in `BaseAgent`).
+- **Errors go back to the model** to fix (validation errors, `ModelRetry`), up to the retry limit.
+- **Limited context where it matters:** the receipt reader isn't told what was approved.
+- **Everything logged:** every tool call and decision in `AgentLog`, next to the ledger.
+- **Approvals are database state**, not a paused agent run: they can take hours.
+- **Not copied:** long autonomous planning and to-do lists. Our conversations are short and bounded.
+
+The old order-assistant code (businesses, products, rules, orders, payment plans, storefront) was removed on
+2026-10-12; it stays in git (`main`, commit `45b88ae`). Kept: `app/ai/base.py`, `app/ai/prompts.py`,
+`app/payments/paypal.py`, config/db/main, and the frontend shell and UI components.
+
+## 15. Build plan: web app first
+
+Today is Oct 12; submissions close Nov 12. Code first, then AI, then Slack: the money flow must work without AI.
+
+**Week 1 (Oct 13–18): the core, with tests (no UI)**
+1. Remove the order-assistant code; new tables; default settings and a starter common-items list.
+2. Decision engine: request → `auto_approved` / `needs_approval` / `declined`, with reasons (hard ceiling, item
+   cap, monthly limit, category budget, "too soon").
+3. Payouts: PayPal client methods (create, get batch, get item, cancel), the claim id as `sender_batch_id`, item
+   status (not batch status), ledger entries. Tested with httpx's MockTransport, then once in the sandbox.
+4. Claims: link to an approved request, receipt date ≥ approval, total ≤ cap, duplicate image hash, duplicate
+   store + date + total.
+5. Waiting period: payouts become due after N days; a background loop sends due payouts; a report holds a pending
+   payout; notifications are recorded.
+
+*Done when:* tests cover every rule in §6, and a script runs request → claim → payout against the sandbox.
+
+**Week 2 (Oct 19–25): the web app**
+- **Sign in:** the "View as" switcher and `?as=<member>` links (§13, decision 6).
+- **Employee pages:** home (budget left, my requests and claims, notifications), new request (a form, replaced by
+  chat in week 3), claim (receipt photo + store/date/total), feed (👍, report a problem).
+- **Admin pages:**
+  - setup: company, members, common items, settings, reusing the review-table pattern;
+  - queue: approvals and alerts;
+  - ledger: top-ups, payouts, pending ones, and a "fast-forward" button for the demo;
+  - top-up with PayPal Checkout.
+- **Demo seed script:** a company, 3 members on sandbox personal accounts, a starter item list.
+
+*Done when:* the whole §11 demo works through the web forms, in the sandbox.
+
+**Week 3 (Oct 26–Nov 1): AI**
+- **Office desk agent:**
+  - reading tools: budget, my status, common items, recent purchases, settings;
+  - action tools: `submit_request` and `report_problem`, which call the week-1 core;
+  - decision cards built by code.
+- **Receipt reader:** pre-fills the claim form; it isn't told what was approved, and code compares.
+- **Setup assistant:** pasted list → draft common items.
+- **Chat page** with streaming. The forms stay as a fallback.
+
+*Done when:* the demo works by chatting.
+
+**Week 4 (Nov 2–8): Slack, reliability, deploy**
+- Slack layer (2–4 days): Bolt for Python, Socket Mode in development; DMs, approval buttons, `#office-fund` posts,
+  reactions, receipt files.
+- Live reliability script: about 15 realistic requests and receipts; how often the AI is wrong, and whether code
+  catches it every time.
+- Check-in follow-up (neutral questions to both sides, summary for the admin).
+- Deploy to Render.
+
+**Nov 9–12: submission.** Demo video, Devpost write-up, README; at least 2 days spare.
+
+**Cut first if behind:** trust levels, restock suggestions, "add to common list?", random spot checks, daily
+summary, setup assistant, then Slack (the web app is the fallback). **Never cut:** the decision engine, the
+waiting period with holds, Payouts, the feed with its report button.
+
+**Needed from us:** 2–3 more sandbox personal accounts (members); a fast, vision-capable model with an API key
+(week 3); a free Slack workspace and app (week 4).

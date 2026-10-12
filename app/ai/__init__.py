@@ -3,9 +3,8 @@
     model.py       the LLM connection (any OpenAI-compatible endpoint, from .env)
     base.py        BaseAgent: prompts, tools, normal and streamed output, handovers (a LangGraph graph per agent)
     prompts.py     every prompt, versioned
-    tools.py       read-only tools over one shop's data (ShopDeps)
-    agents.py      the customer-facing agents: front desk -> order builder
-    onboarding.py  turning an owner's pasted menu or policies into drafts
+
+The office fund's agents (office desk, receipt reader, setup assistant) come in week 3 (docs/SPEC.md §8, §15).
 """
 
 from app.ai.base import (AgentResult, BaseAgent, ModelRetry, RunContext, StreamEvent, Usage, agent_prompt,
