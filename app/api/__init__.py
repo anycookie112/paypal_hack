@@ -2,8 +2,9 @@
 
 from fastapi import APIRouter
 
-from app.api import meta
+from app.api import members, meta, setup
+from app.api.deps import add_error_handlers  # noqa: F401  (used by app/main.py)
 
 router = APIRouter(prefix="/api")
-for module in (meta,):
+for module in (meta, members, setup):
     router.include_router(module.router)

@@ -36,6 +36,7 @@ Called directly, `run` and `stream` raise `AgentError` with the same `completed`
 """
 
 import asyncio
+import inspect
 import json
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -44,11 +45,13 @@ from typing import Annotated, Any, ClassVar, Literal
 
 import openai
 from langchain.agents import create_agent
-from langchain.agents.middleware import (AgentMiddleware, ModelCallLimitMiddleware, ModelRequest,
+from langchain.agents.middleware import (AgentMiddleware, ModelCallLimitMiddleware, ModelRequest, ModelResponse,
                                          ToolCallLimitMiddleware, ToolCallRequest, ToolErrorMiddleware,
                                          dynamic_prompt, hook_config)
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
+from langchain.agents.structured_output import ToolStrategy
+from langchain_core.exceptions import ModelError
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
@@ -63,8 +66,10 @@ from app.core.requests import ActionError
 
 log = logging.getLogger(__name__)
 
-_FAILURES = (ModelCallLimitExceededError, ToolCallLimitExceededError, GraphRecursionError, openai.APIError,
-             TimeoutError)
+# Failures that aren't bugs: limits, and the provider being down, slow, rate-limited or refusing (ModelError covers
+# every LangChain provider; openai.APIError the OpenAI-compatible client's own).
+_FAILURES = (ModelCallLimitExceededError, ToolCallLimitExceededError, GraphRecursionError, ModelError,
+             openai.APIError, TimeoutError)
 
 
 @dataclass
@@ -88,11 +93,13 @@ class BaseAgent:
     context: ClassVar[type] = type(None)     # what every run gets: who's chatting, the database session
     output: ClassVar[type[BaseModel] | None] = None  # the result it must finish with; None = a text answer
     model_name: ClassVar[str | None] = None  # another model on the same provider (e.g. one that reads images)
+    context_tag: ClassVar[str] = "context"   # the tag around `instructions()` at the end of the prompt
 
     # Limits per run. Defaults for every agent of this class; each can be changed when it's created.
     max_model_calls: ClassVar[int] = 8
     max_tool_calls: ClassVar[int] = 10
     max_repeats: ClassVar[int] = 2                # the same tool with the same arguments; more is refused
+    max_calls_per_reply: ClassVar[int] = 5        # tool calls one reply may make; the rest are dropped
     timeout_seconds: ClassVar[float | None] = None  # the whole run; None = only the provider's per-call timeout
 
     def __init__(self, *, model: BaseChatModel | None = None, prompt_version: int | None = None,
@@ -119,31 +126,59 @@ class BaseAgent:
         """Override to add instructions that depend on the run, e.g. who's chatting and today's date."""
         return ""
 
+    def system_prompt(self, context: Any) -> str:
+        """The whole prompt for one run (docs/PROMPTS.md): the versioned prompt, then the generated <finish>
+        section when there's an `output`, then `instructions()` in a <context_tag> block, always last."""
+        parts = [self.prompt_text, finish_section(self.output) if self.output else ""]
+        if extra := self.instructions(context):
+            parts.append(f"<{self.context_tag}>\n{extra}\n</{self.context_tag}>")
+        return "\n\n".join(p for p in parts if p)
+
+    def middleware(self) -> list[AgentMiddleware]:
+        """Override to add middleware, e.g. logging every tool call. Wrapped around the error handling, so it sees
+        every call, refused or failed ones too."""
+        return []
+
     def register_tool(self, func: Callable | BaseTool) -> None:
         """Let the model call `func`: a function or method, or a LangChain tool. The docstring says what it does;
         its Google-style `Args:` section describes each argument."""
         if self._graph is not None:
             raise RuntimeError(f"{self.name} is already initialized; register tools in setup()")
-        self.tools.append(func if isinstance(func, BaseTool)
-                          else tool(func, parse_docstring=True, error_on_invalid_docstring=False))
+        if isinstance(func, BaseTool):
+            self.tools.append(func)
+            return
+        made = tool(func, parse_docstring=True, error_on_invalid_docstring=False)
+        if not inspect.iscoroutinefunction(func):
+            # LangChain runs a plain function in a thread pool. Ours share one database session, which isn't
+            # thread-safe (a live run failed with "row not present"), so they run on the event loop's thread, one
+            # at a time: each is quick and never awaits.
+            async def on_this_thread(*args, _func=func, **kwargs):
+                return _func(*args, **kwargs)
+            made.coroutine = on_this_thread
+        self.tools.append(made)
 
     def initialize(self):
         """Build the graph. Runs on first use."""
         if self._graph is None:
             @dynamic_prompt
             def system_prompt(request: ModelRequest) -> str:
-                return "\n\n".join(p for p in (self.prompt_text, self.instructions(request.runtime.context)) if p)
+                return self.system_prompt(request.runtime.context)
 
             self._graph = create_agent(
-                self._model or default_model(self.model_name), self.tools, response_format=self.output,
+                # ToolStrategy: the result is always a tool call to finish with (docs/PROMPTS.md §5), whatever the
+                # provider; a provider's own JSON mode would end the run without one.
+                self._model or default_model(self.model_name), self.tools,
+                response_format=ToolStrategy(self.output) if self.output else None,
                 context_schema=self.context, name=self.name,
                 # _MustFinish comes first: its "back to the model" runs after the call limit has counted the call.
                 middleware=[*([_MustFinish(self.output)] if self.output else []),
                             system_prompt,
                             ModelCallLimitMiddleware(run_limit=self.max_model_calls, exit_behavior="error"),
                             ToolCallLimitMiddleware(run_limit=self.max_tool_calls, exit_behavior="error"),
+                            *self.middleware(),
                             ToolErrorMiddleware(on_error=_back_to_the_model),
-                            _RefuseRepeats(self.max_repeats)])
+                            _RefuseRepeats(self.max_repeats),
+                            _CheckReply(self.output, self.max_calls_per_reply)])
         return self._graph
 
     async def run(self, messages: str | Sequence[BaseMessage], *, context: Any = None) -> Any:
@@ -203,9 +238,9 @@ class BaseAgent:
         result; it never raises."""
         about = description or self.description or f"Ask the {self.name} agent."
 
-        @tool(name or self.name, description=f"{about} It sees nothing of this conversation: include every id and "
-                                             "detail it needs in the request.")
-        async def ask(request: Annotated[str, "What you need, with every id and detail it needs."],
+        @tool(name or self.name, description=f"{about}\n{SUBAGENT_NOTES}")
+        async def ask(request: Annotated[str, "The complete brief: what you need, with every id and detail it needs, "
+                                              "and what to report back."],
                       runtime: ToolRuntime[Any]) -> str:
             try:
                 result = await self.run(request, context=runtime.context)
@@ -218,6 +253,69 @@ class BaseAgent:
     def __repr__(self) -> str:
         prompt = f" ({self.prompt_id})" if self.prompt_id else ""
         return f"<{type(self).__name__} {self.name!r}{prompt}: {len(self.tools)} tools>"
+
+
+SUBAGENT_NOTES = """\
+- It sees nothing of this conversation: the request must include every id and detail it needs.
+- Its result is authoritative: don't redo its work or contradict it.
+- The member never sees its result: tell them what matters, in your own words."""
+
+
+def finish_section(output: type[BaseModel]) -> str:
+    """The <finish> section for an agent that must end by calling `output` (docs/PROMPTS.md §5), written from the
+    schema itself, so the prompt and the schema can't disagree."""
+    name, schema = output.__name__, output.model_json_schema()
+    fields = [f"  - {field}: {spec['description']}" if spec.get("description") else f"  - {field}"
+              for field, spec in schema.get("properties", {}).items()]
+    lines = [f"- When you're done, call {name} exactly once. It's the only way to finish, and the only thing that "
+             "is read: nothing else you write is seen.",
+             f"- Don't call any other tool in the same turn as {name}.",
+             f"- {name} fields:", *fields]
+    extra = output.model_config.get("json_schema_extra")
+    if examples := (extra.get("examples") if isinstance(extra, dict) else None):  # as written, not re-sorted
+        lines.append(f"- Example: {json.dumps(examples[0], ensure_ascii=False)}")
+    return "<finish>\n" + "\n".join(lines) + "\n</finish>"
+
+
+class _CheckReply(AgentMiddleware):
+    """Fixes a model reply before anything acts on it (live runs on Atria, 2026-10-13, did both):
+
+    - It called the result schema together with other tools: it answered before seeing their results (once it
+      copied the example answer). The result is dropped; the tools run, and it finishes on a later turn.
+    - It asked for too many tool calls (247 in one reply): the same call twice is kept once, and only the first
+      `limit` are kept."""
+
+    def __init__(self, output: type[BaseModel] | None, limit: int):
+        super().__init__()
+        self.output = output.__name__ if output else None
+        self.limit = limit
+
+    def _check(self, response: ModelResponse) -> ModelResponse:
+        reply = next((m for m in response.result if isinstance(m, AIMessage)), None)
+        if reply is None or not reply.tool_calls:
+            return response
+        calls, finished = reply.tool_calls, response.structured_response
+        if self.output and len(calls) > 1 and any(c["name"] == self.output for c in calls):
+            calls, finished = [c for c in calls if c["name"] != self.output], None
+        unique = []
+        for call in calls:
+            if not any(c["name"] == call["name"] and c["args"] == call["args"] for c in unique):
+                unique.append(call)
+        unique = unique[:self.limit]
+        if len(unique) == len(reply.tool_calls):
+            return response
+        kept = {c["id"] for c in unique}
+        fixed = reply.model_copy(update={"tool_calls": unique})
+        fixed.additional_kwargs.pop("tool_calls", None)  # the provider's raw copy, so only the kept calls go back
+        result = [fixed if m is reply else m for m in response.result
+                  if not (isinstance(m, ToolMessage) and m.tool_call_id not in kept)]
+        return ModelResponse(result=result, structured_response=finished)
+
+    def wrap_model_call(self, request, handler):
+        return self._check(handler(request))
+
+    async def awrap_model_call(self, request, handler):
+        return self._check(await handler(request))
 
 
 class _MustFinish(AgentMiddleware):

@@ -4,12 +4,15 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router'
 import App from './App.tsx'
 import './index.css'
+import { MemberProvider } from './member'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
       <Toast.Provider placement="top end" />
-      <App />
+      <MemberProvider>
+        <App />
+      </MemberProvider>
     </BrowserRouter>
   </StrictMode>,
 )

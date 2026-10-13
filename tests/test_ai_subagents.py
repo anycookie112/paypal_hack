@@ -10,7 +10,8 @@ from sqlmodel import select
 
 from app.ai import AgentError
 from app.ai.agents import ActionAgent, ActionResult, Chat, LookupAgent
-from app.core import settings
+from app.core import memory, settings
+from app.core.requests import approve_request
 from app.models import Notification, Report, Request
 from tests.demo import NOW, item, member, past_purchase, tell
 from tests.fakes import FakeChatModel, call
@@ -41,23 +42,58 @@ def ask(agent, session, who, request="go"):
 
 # --- lookup ---------------------------------------------------------------------------------------
 
-def test_lookup_finds_the_item_and_who_is_on_it(session, group):
-    tell(session, "Marco", "Trash bags")
-    model, results = scripted(call("find_items", {"query": "work gloves"}), call("who_is_on_it"),
-                              found("Gloves (item 1, up to $25.00); Marco is getting trash bags."))
-    result = ask(LookupAgent(model=model), session, "Priya")
-    assert (result.status, result.answer[:6]) == ("found", "Gloves")
-    [gloves] = json.loads(results[0].content)
-    assert (gloves["item_id"], gloves["name"], gloves["cap"]) == (item(session, "Gloves").id, "Gloves", "$25.00")
-    [getting] = json.loads(results[1].content)
-    assert (getting["member"], getting["item"], getting["until"]) == ("Marco", "Trash bags", "Sat 17 Oct, 12:40 UTC")
+def test_every_agent_sees_the_items_grouped_by_where_they_stand(session, group):
+    past_purchase(session, "Priya", "Trash bags", 11_99, days_ago=16)      # lasts 14: running low
+    past_purchase(session, "Marco", "Coffee", 14_50, days_ago=5)           # lasts 14: too soon to get again
+    past_purchase(session, "Dana", "Snacks and water", 20_00, days_ago=5)  # lasts 7: fine to get again
+    marco = tell(session, "Marco", "Gloves").request
+    ladder = tell(session, "Dana", description="Ladder", estimate_cents=40_00).request  # not on the list
+    approve_request(session, ladder.id, member(session, "Sam"), now=NOW)
+    seen = []
+    model = FakeChatModel(respond=lambda messages, tools: seen.append(messages[0].content) or found())
+    ask(LookupAgent(model=model), session, "Priya")
+
+    def section(name):
+        text = seen[-1].split(f"<{name}>\n")[1].split(f"\n</{name}>")[0]
+        return [line.split(" (")[0][2:] for line in text.splitlines() if line.startswith("- ")], text
+
+    getting, text = section("being_got")
+    assert getting == ["Gloves", "Ladder"]
+    assert f"  Marco, until Sat 17 Oct, 12:40 UTC (request {marco.id})" in text
+    assert "- Ladder (not on the list; a PIC approved it)" in text
+    assert section("running_low")[0] == ["Trash bags"]
+    assert "  last bought 16 days ago by Priya" in section("running_low")[1]
+    assert section("recently_bought")[0] == ["Coffee"]
+    assert section("available")[0] == ["Cleaning wipes", "First-aid restock", "Flyer printing", "Snacks and water",
+                                       "Tape and markers"]
+    assert "up to $25.00 | lasts about 14 days | proof: receipt + photo" in section("being_got")[1]
+
+    gloves = item(session, "Gloves")
+    gloves.active = False  # switched off: not offered any more
+    session.add(gloves)
+    session.commit()
+    ask(LookupAgent(model=model), session, "Priya")
+    assert "- Gloves" not in seen[-1]
+
+
+def test_the_item_list_agrees_with_the_decision_engine(session, group):
+    """What the AI is told is "recently bought" is exactly what the rules send to a PIC as bought too soon."""
+    past_purchase(session, "Marco", "Coffee", 14_50, days_ago=5)
+    board = memory.item_board(session, group, NOW)
+    assert [i.name for i in board.with_status("recently_bought")] == ["Coffee"]
+    result = tell(session, "Priya", "Coffee")
+    assert result.decision.outcome == "needs_approval" and "bought 5 days ago by Marco" in result.decision.reasons[0]
+    assert tell(session, "Priya", "Tape and markers").decision.outcome == "confirmed"  # in <available>
 
 
 def test_lookup_knows_who_is_chatting_and_when(session, group):
     seen = []
     model = FakeChatModel(respond=lambda messages, tools: seen.append(messages[0].content) or found())
     ask(LookupAgent(model=model), session, "Priya")
-    assert seen[0].endswith("The member chatting is Priya (member). It's Sat 17 Oct, 08:40 UTC.")
+    assert "<chat_context>\nGroup: Riverside Volunteers. Member: Priya (member). Now: Sat 17 Oct, 08:40 UTC.\n\n" \
+           "<items>" in seen[0]
+    assert "<finish>\n- When you're done, call LookupResult exactly once." in seen[0]
+    assert '- Example: {"status": "found"' in seen[0]
 
 
 def test_lookup_says_who_got_it_and_hides_amounts_if_the_group_does(session, group):

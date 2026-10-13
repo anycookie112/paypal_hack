@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 
 import pytest
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel
 
@@ -67,7 +67,7 @@ def test_prompt_tools_and_context():
     assert asyncio.run(desk.run("who am I?", context=chat)) == "Hi Priya!"
     assert chat.asked == ["whoami"]
     assert isinstance(seen[0][0], SystemMessage)
-    assert seen[0][0].content == "Be brief. Never guess.\n\nYou're talking to Priya."
+    assert seen[0][0].content == "Be brief. Never guess.\n\n<context>\nYou're talking to Priya.\n</context>"
     assert seen[1][-1].content == "Priya"
     assert tool_names(model.calls[0]["tools"]) == ["whoami", "get_gloves", "broken"]
     assert desk.prompt_id == "test_desk@v2"
@@ -168,7 +168,8 @@ def test_a_subagent_answers_the_coordinator():
     assert chat.asked == ["lookup.whoami"]               # same context as the coordinator
     assert desk_seen[1][-1].content == "The member is Priya."
     [described] = [t["function"]["description"] for t in desk_model.calls[0]["tools"] if t["function"]["name"] == "lookup"]
-    assert described == "Looks things up. It sees nothing of this conversation: include every id and detail it needs in the request."
+    assert described.startswith("Looks things up.\n- It sees nothing of this conversation")
+    assert "The member never sees its result" in described
 
 
 class Reading(BaseModel):
@@ -263,3 +264,72 @@ def test_the_coordinator_hears_what_a_failed_subagent_did():
     failure = json.loads(desk_seen[1][-1].content)
     assert failure["status"] == "failed"
     assert failure["completed"] == [{"tool": "whoami", "result": "Priya"}, {"tool": "whoami", "result": "Priya"}]
+
+
+def test_the_finish_section_is_written_from_the_schema():
+    prompt = Reader(model=FakeChatModel(respond=lambda m, t: "x")).system_prompt(None)
+    assert prompt.startswith("<finish>\n- When you're done, call Reading exactly once.")
+    assert "  - store\n  - total_cents" in prompt  # every field, in order
+    assert prompt.endswith("</finish>")
+
+
+def test_plain_tools_run_on_the_callers_thread():
+    """Tools share one database session, which isn't thread-safe: LangChain's thread pool must not run them."""
+    import threading
+    threads = []
+
+    class Where(BaseAgent):
+        def setup(self):
+            self.register_tool(self.here)
+
+        def here(self) -> str:
+            """Where this runs."""
+            threads.append(threading.get_ident())
+            return "here"
+
+    model, _ = replies(call("here"), call("here", {}), "done")
+    asyncio.run(Where(model=model, max_repeats=5).run("go"))
+    assert threads == [threading.get_ident()] * 2
+
+
+class Answer(BaseModel):
+    answer: str
+
+
+class Finder(BaseAgent):
+    """A subagent with a tool and a result schema, like the lookup agent."""
+    name = "finder"
+    context = Chat
+    output = Answer
+
+    def setup(self):
+        self.register_tool(self.whoami)
+
+    def whoami(self, n: int, runtime: ToolRuntime[Chat]) -> str:
+        """Who is chatting.
+
+        Args:
+            n: Any number.
+        """
+        runtime.context.asked.append(n)
+        return runtime.context.member
+
+
+def test_finishing_before_seeing_the_results_is_not_accepted():
+    """A live run answered with the schema's example while its lookups were still running."""
+    both = AIMessage("", tool_calls=[{"name": "whoami", "args": {"n": 1}, "id": "a"},
+                                     {"name": "Answer", "args": {"answer": "made up"}, "id": "b"}])
+    model, seen = replies(both, call("Answer", {"answer": "It's Priya."}))
+    chat = Chat("Priya")
+    assert asyncio.run(Finder(model=model).run("who?", context=chat)) == Answer(answer="It's Priya.")
+    assert chat.asked == [1]                     # the tool still ran
+    assert seen[1][-1].content == "Priya"        # and the model saw its result before finishing
+
+
+def test_a_runaway_reply_is_cut_down():
+    """A live run asked for 247 tool calls in one reply."""
+    flood = AIMessage("", tool_calls=[{"name": "whoami", "args": {"n": i % 8}, "id": f"c{i}"} for i in range(40)])
+    model, _ = replies(flood, call("Answer", {"answer": "Priya"}))
+    chat = Chat("Priya")
+    asyncio.run(Finder(model=model).run("who?", context=chat))
+    assert chat.asked == [0, 1, 2, 3, 4]         # repeats dropped, then only the first five

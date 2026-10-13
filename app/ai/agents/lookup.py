@@ -3,11 +3,10 @@
 from typing import Literal
 
 from langgraph.prebuilt import ToolRuntime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select
 
-from app.ai.agents.context import Chat, facts, when
-from app.ai.base import BaseAgent
+from app.ai.agents.context import Chat, ChatAgent, facts
 from app.core import memory, settings
 from app.core.requests import ActionError, admins, approvers
 from app.models import Item
@@ -15,50 +14,38 @@ from app.models import Item
 
 class LookupResult(BaseModel):
     """Finish by calling this: it's the only thing the coordinator sees."""
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "status": "found",
+        "answer": "Gloves (item_id 1) were last bought 9 days ago by Marco at Riverside Hardware. There's a photo of "
+                  "where he put them; the payout is still on hold."}]})
+
     status: Literal["found", "not_found"] = Field(
-        description="found: the tools answered the request; not_found: they didn't (nothing matches, or you "
-                    "can't tell which item is meant).")
+        description="found: the tools answered the request; not_found: they didn't (nothing matches, or you can't "
+                    "tell which item is meant: then name the closest ones in the answer).")
     answer: str = Field(description="The facts, plainly: who, what, when, how much, with every id the "
                                     "coordinator needs (item_id, request_id, claim_id, question_id).")
 
 
-class LookupAgent(BaseAgent):
+class LookupAgent(ChatAgent):
     name = "lookup"
-    description = ("Look things up: which list item someone means, who's getting what, who bought something and when, "
-                   "what's running low, budgets, the member's own status and the group's rules.")
+    description = ("Use this for the group's records beyond the item list: who bought something last, where it was "
+                   "put and whether its payout is on hold; how often an item is bought; budgets; the member's own "
+                   "status (their requests, claims, payouts, questions for them); the group's rules. Returns the "
+                   "facts with their ids.")
     prompt = "lookup"
-    context = Chat
     output = LookupResult
 
     def setup(self):
-        for tool in (self.find_items, self.who_is_on_it, self.latest_purchase, self.item_history,
-                     self.probably_needed, self.budgets, self.my_status, self.group_rules):
+        # Which item, who's getting it and what's running low are in the item list in the prompt (ChatAgent).
+        for tool in (self.latest_purchase, self.item_history, self.budgets, self.my_status, self.group_rules):
             self.register_tool(tool)
-
-    def instructions(self, chat: Chat) -> str:
-        return f"The member chatting is {chat.member.name} ({chat.member.role}). It's {when(chat.time)}."
-
-    def find_items(self, query: str, runtime: ToolRuntime[Chat]) -> str:
-        """Common items matching what someone said, best match first: id, name, other names, the most paid back
-        (cap), how long it usually lasts, the proof needed. An empty query lists every item.
-
-        Args:
-            query: The thing, in the member's words, e.g. "work gloves".
-        """
-        chat = runtime.context
-        return facts(memory.find_items(chat.session, chat.group, query))
-
-    def who_is_on_it(self, runtime: ToolRuntime[Chat]) -> str:
-        """Everyone getting something right now, and until when."""
-        chat = runtime.context
-        return facts(memory.who_is_on_it(chat.session, chat.group, chat.time))
 
     def latest_purchase(self, item_id: int, runtime: ToolRuntime[Chat]) -> str:
         """The last time an item was bought: who got it, when, the store, whether there's a photo of where it was
         put, and whether its payout is still on hold. For "I can't find the gloves".
 
         Args:
-            item_id: The item, from find_items.
+            item_id: The item, from the item list.
         """
         chat = runtime.context
         details = memory.latest_purchase(chat.session, _item(chat, item_id))
@@ -73,15 +60,10 @@ class LookupAgent(BaseAgent):
         average days between purchases so far.
 
         Args:
-            item_id: The item, from find_items.
+            item_id: The item, from the item list.
         """
         chat = runtime.context
         return facts(memory.item_history(chat.session, _item(chat, item_id)))
-
-    def probably_needed(self, runtime: ToolRuntime[Chat]) -> str:
-        """Common items that have probably run out (past their usual restock time) that nobody is getting."""
-        chat = runtime.context
-        return facts(memory.probably_needed(chat.session, chat.group, chat.time))
 
     def budgets(self, runtime: ToolRuntime[Chat]) -> str:
         """This month's budget for the group and each category: the budget, what's spent or promised, what's left."""
@@ -109,5 +91,5 @@ class LookupAgent(BaseAgent):
 def _item(chat: Chat, item_id: int) -> Item:
     item = chat.session.exec(select(Item).where(Item.id == item_id, Item.group_id == chat.group.id)).first()
     if item is None:
-        raise ActionError(f"No item with id {item_id}: use find_items to get the id.")
+        raise ActionError(f"No item with id {item_id}: check the item list for its id.")
     return item

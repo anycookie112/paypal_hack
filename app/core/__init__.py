@@ -4,6 +4,7 @@ The web API, and later the chat bot and the AI's tools, only call into here. Not
 HTTP, React or any chat platform.
 
     settings.py    the group's settings: a closed set with defaults
+    setup.py       what the treasurer changes: common items, categories, budgets, settings (admins only)
     decisions.py   the decision engine: confirmed / needs approval / declined / already on it
     requests.py    telling the group "I'm getting X"; approving and rejecting
     payouts.py     the 3-day hold, reports, and releasing payouts through PayPal; the ledger

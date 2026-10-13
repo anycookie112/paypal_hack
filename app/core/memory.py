@@ -17,7 +17,7 @@ from pydantic_core import to_jsonable_python
 from sqlmodel import Session, select
 
 from app.core import settings
-from app.core.decisions import ACCEPTED_CLAIMS, committed_cents, expire_stale, last_purchase
+from app.core.decisions import ACCEPTED_CLAIMS, bought_too_soon, committed_cents, expire_stale, last_purchase
 from app.core.requests import thing
 from app.models import (AgentLog, Category, Claim, Conversation, Group, Item, Member, Message, Report, Request,
                         utcnow)
@@ -87,6 +87,66 @@ class ItemInfo:
     cap_cents: int       # the most paid back for one purchase
     restock_days: int    # how long it usually lasts
     proof: str           # receipt | receipt_photo
+
+
+@dataclass
+class BoardItem:
+    item_id: int
+    name: str
+    other_names: list[str]
+    category: str
+    cap_cents: int                 # the most paid back for one purchase
+    restock_days: int              # how long it usually lasts
+    proof: str                     # receipt | receipt_photo
+    on_it: list[OnIt]              # who's getting it right now
+    last_bought: datetime | None   # None = never bought
+    last_bought_by: str
+    status: str                    # see ItemBoard
+
+
+@dataclass
+class ItemBoard:
+    """Every common item and where it stands: what the AI reads instead of searching (it's short). Each item has one
+    status, decided by code with the same rules as the decision engine:
+
+        being_got        someone is getting it right now
+        recently_bought  bought too recently to get again without an approver (decisions.bought_too_soon)
+        running_low      past its usual restock time, and nobody is getting it
+        available        anything else: anyone can get one
+
+    Switched-off items aren't on the board: they can't be asked for."""
+    items: list[BoardItem]
+    others_on_it: list[OnIt]       # things not on the list that someone is getting (a PIC approved them)
+
+    def with_status(self, status: str) -> list[BoardItem]:
+        return [i for i in self.items if i.status == status]
+
+
+def item_board(session: Session, group: Group, now: datetime | None = None) -> ItemBoard:
+    now = now or utcnow()
+    getting = who_is_on_it(session, group, now)
+    by_item: dict[int, list[OnIt]] = {}
+    for request_id, item_id in session.exec(select(Request.id, Request.item_id).where(
+            Request.id.in_([o.request_id for o in getting]))):
+        by_item.setdefault(item_id, []).append(next(o for o in getting if o.request_id == request_id))
+    too_soon_percent = settings.get_all(session, group)["too_soon_percent"]
+    items = []
+    for item in session.exec(select(Item).where(Item.group_id == group.id, Item.active).order_by(Item.name)).all():
+        last = last_purchase(session, item)
+        on_it = by_item.get(item.id, [])
+        if on_it:
+            status = "being_got"
+        elif last and bought_too_soon(item, last.submitted_at, now, too_soon_percent):
+            status = "recently_bought"
+        elif last and last.submitted_at + timedelta(days=item.restock_days) <= now:
+            status = "running_low"
+        else:
+            status = "available"
+        items.append(BoardItem(
+            item.id, item.name, [a.strip() for a in item.aliases.split(",") if a.strip()],
+            session.get(Category, item.category_id).name, item.cap_cents, item.restock_days, item.proof, on_it,
+            last.submitted_at if last else None, session.get(Member, last.member_id).name if last else "", status))
+    return ItemBoard(items, by_item.get(None, []))
 
 
 def _words(text: str) -> set[str]:

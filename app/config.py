@@ -11,7 +11,8 @@ APP_NAME = "Group Fund"  # working name
 DATA_DIR = ROOT / "data"
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR / 'app.db'}")
 
-# Any OpenAI-compatible chat completions endpoint.
+# The LLM (app/ai/model.py): "google" (Gemini, native client) or "openai" (any OpenAI-compatible endpoint).
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.atria-asi.ai/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "Atria-Dawn-Preview")

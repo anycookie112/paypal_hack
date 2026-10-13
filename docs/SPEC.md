@@ -336,12 +336,14 @@ every rule and permission is checked by code.
 
 ### 8.2 Lookup agent (read tools, `app/core/memory.py`)
 
+Every agent's prompt carries **the item list** (`memory.item_board`, in `<chat_context>`): every common item with its
+id, limit, restock time and proof, grouped by where it stands: being got (who, until when), running low, recently
+bought (getting one again needs a PIC) and available. Code groups them with the decision engine's own rules. So "I'm getting gloves" needs no lookup: the coordinator reads the list and goes straight to the action agent.
+The tools are for everything else:
+
 | Tool | Answers |
 |---|---|
-| `find_items(query)` | Which list item it is: id, name, budget, restock time, proof needed. Not sure → treated as not on the list |
-| `who_is_on_it` | "Marco is getting them (by 1 pm)" |
 | `latest_purchase(item)`, `item_history(item)` | Who got it, when, the store, photo, still in its hold (step 1 when something's missing); how often it's bought |
-| `probably_needed` | "Trash bags are overdue: can you grab those instead?" |
 | `budgets`, `my_status` | Budgets and what's left; the member's limit, open requests, claims waiting, questions about their purchases, PayPal email set |
 | `group_rules` | Hold length, limits, who the PICs and the treasurer are, in plain words |
 
@@ -586,6 +588,11 @@ reached PayPal, follows up PENDING/UNCLAIMED, returns failed payouts to the bala
 again. 37 core tests against a fake PayPal, and `scripts/paypal/core_payout_check.py` passed against the sandbox
 ($18.40 paid, $0.40 fee, nothing paid during the hold or twice). Not wired to a background loop yet (with the web app).
 Next: claims (step 4) and the request changes from §4.
+*Progress (2026-10-13, week 2 started early):* the setup pages. `app/core/setup.py`: items and categories (admins
+only; items are switched off, never deleted; caps up to the hard ceiling; names and other names can't clash, so the AI
+can tell items apart), the group's name, budget and settings, all checked before any is saved. API: the "View as"
+`X-Member-Id` header, `/api/members`, `/api/catalog`, `/api/items`, `/api/categories`, `/api/settings`. Web: the
+"View as" switcher (`?as=sam`), an Items page and a Settings page (read-only for everyone but the treasurer).
 
 **Week 2 (Oct 19–25): the web app**
 - **Sign in:** the "View as" switcher and `?as=<member>` links (§13, decision 6).

@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import router as api_router
+from app.api import add_error_handlers, router as api_router
 from app.config import APP_NAME, ROOT
 from app.db import init_db
 
@@ -19,6 +19,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=APP_NAME, lifespan=lifespan)
 app.include_router(api_router)
+add_error_handlers(app)
 
 if (FRONTEND_DIST / "assets").exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")

@@ -7,10 +7,9 @@ is checked by code. Approving, resolving reports and paying are never tools.
 from typing import Literal
 
 from langgraph.prebuilt import ToolRuntime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from app.ai.agents.context import Chat, when
-from app.ai.base import BaseAgent
+from app.ai.agents.context import Chat, ChatAgent, when
 from app.core import payouts
 from app.core.members import set_paypal_email
 from app.core.requests import ActionError, release_request, submit_request, thing
@@ -20,30 +19,34 @@ from app.models import Member
 
 class ActionResult(BaseModel):
     """Finish by calling this: it's the only thing the coordinator sees."""
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "status": "done",
+        "message": "Confirmed (request 4): Priya is getting Gloves, paid back up to $25.00, by Sat 17 Oct, 13:00 "
+                   "UTC. The group can see it.",
+        "missing": []}]})
+
     status: Literal["done", "needs_info", "refused"] = Field(
-        description="done: the tool did it; needs_info: something needed is missing, so no tool was called; "
-                    "refused: a rule said no.")
+        description="done: a tool succeeded (also 'sent to a PIC to approve'); needs_info: something needed is "
+                    "missing, so no tool was called; refused: a tool said no (someone else is getting it, a rule, a "
+                    "permission).")
     message: str = Field(description="What happened or why not, in the tool's own words.")
     missing: list[str] = Field(default_factory=list, description="For needs_info: what to ask the member, "
                                                              "e.g. 'when they'll get it'.")
 
 
-class ActionAgent(BaseAgent):
+class ActionAgent(ChatAgent):
     name = "act"
-    description = ("Do something for the member: get an item (tell the group they're on it), release it, ask the "
-                   "person who bought something where it is, answer a question about their own purchase, file a "
-                   "formal report, or set their PayPal email. Give every id and detail it needs.")
+    description = ("Use this to do something for the member: get an item (the group sees they're on it), release "
+                   "it, ask the person who bought something where it is, answer a question about their own purchase, "
+                   "file a formal report (only after they said yes), or set their PayPal email. Returns done, "
+                   "needs_info (what to ask them) or refused (why), in the app's own words.")
     prompt = "action"
-    context = Chat
     output = ActionResult
 
     def setup(self):
         for tool in (self.get_item, self.release, self.ask_buyer, self.answer_question, self.report_problem,
                      self.set_paypal_email):
             self.register_tool(tool)
-
-    def instructions(self, chat: Chat) -> str:
-        return f"You're acting for {chat.member.name}. It's {when(chat.time)}."
 
     def get_item(self, runtime: ToolRuntime[Chat], item_id: int | None = None, description: str = "",
                  hours: int | None = None, estimate: str = "", quantity: int = 1, reason: str = "",

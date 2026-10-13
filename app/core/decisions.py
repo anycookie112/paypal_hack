@@ -87,6 +87,12 @@ def committed_cents(session: Session, group: Group, now: datetime, *, member: Me
     return session.exec(claims).one() + session.exec(pending).one()
 
 
+def bought_too_soon(item: Item, last_bought: datetime, now: datetime, too_soon_percent: int) -> bool:
+    """Getting `item` again now would be too soon: it was bought within `too_soon_percent` of its usual restock time.
+    Then an approver decides (and the AI is told it was recently bought)."""
+    return now - last_bought < timedelta(days=item.restock_days * too_soon_percent / 100)
+
+
 def _ago(then: datetime, now: datetime) -> str:
     days = (now - then).days
     return "today" if days == 0 else "yesterday" if days == 1 else f"{days} days ago"
@@ -120,8 +126,7 @@ def decide(session: Session, group: Group, member: Member, *, item: Item | None,
                            f"limit for {item.name}.")
             amount = estimate_cents
         last = last_purchase(session, item)
-        too_soon = timedelta(days=item.restock_days * config["too_soon_percent"] / 100)
-        if last and now - last.submitted_at < too_soon:
+        if last and bought_too_soon(item, last.submitted_at, now, config["too_soon_percent"]):
             buyer = session.get(Member, last.member_id)
             reasons.append(f"{item.name} was bought {_ago(last.submitted_at, now)} by {buyer.name}; "
                            f"it usually lasts {item.restock_days} days.")
