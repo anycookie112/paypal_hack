@@ -6,3 +6,4 @@ scripts/paypal/logs/
 data/
 .venv/
 .pytest_cache/
+harnesses/

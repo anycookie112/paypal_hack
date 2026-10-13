@@ -1,15 +1,13 @@
 """Everything AI, built on LangChain and LangGraph.
 
-    model.py       the LLM connection (any OpenAI-compatible endpoint, from .env)
-    base.py        BaseAgent: prompts, tools, normal and streamed output, handovers (a LangGraph graph per agent)
+    model.py       the LLM provider (any OpenAI-compatible endpoint, from .env)
+    base.py        BaseAgent: prompts, model, tools, normal and streamed output; `as_tool` makes it a subagent
     prompts.py     every prompt, versioned
 
-The group fund's agents (group desk, receipt reader, setup assistant) come in week 3 (docs/SPEC.md §8, §15).
+The group fund's agents (coordinator, lookup, actions; the receipt reader) are described in docs/SPEC.md §8.
 """
 
-from app.ai.base import (AgentResult, BaseAgent, ModelRetry, RunContext, StreamEvent, Usage, agent_prompt,
-                         agent_tool, agent_validator)
+from app.ai.base import BaseAgent, StreamEvent
 from app.ai.model import AgentError, available, default_model
 
-__all__ = ["AgentError", "AgentResult", "BaseAgent", "ModelRetry", "RunContext", "StreamEvent", "Usage",
-           "agent_prompt", "agent_tool", "agent_validator", "available", "default_model"]
+__all__ = ["AgentError", "BaseAgent", "StreamEvent", "available", "default_model"]

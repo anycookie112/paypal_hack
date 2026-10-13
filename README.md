@@ -38,10 +38,17 @@ AI features need `LLM_API_KEY` (any OpenAI-compatible endpoint).
 uv run pytest
 ```
 
+## Demo data
+
+```bash
+uv run python scripts/seed_demo.py --reset    # Riverside Volunteers: 4 people, starter list, past purchases
+```
+
 ## PayPal experiments
 
 ```bash
-uv run python scripts/paypal/payouts.py send    # sandbox payout to BUYER_EMAIL; see the script for the rest
+uv run python scripts/paypal/payouts.py send             # raw Payouts API: sandbox payout to BUYER_EMAIL
+uv run python scripts/paypal/core_payout_check.py      # app/core end to end: request → claim → hold → payout
 ```
 
 ## Deploy (Render)
@@ -57,16 +64,18 @@ uv run python scripts/paypal/payouts.py send    # sandbox payout to BUYER_EMAIL;
 app/
   main.py           FastAPI app: mounts the API, serves frontend/dist
   config.py db.py   settings from .env; SQLite via SQLModel
-  models.py         tables (group fund tables come in week 1, SPEC §14)
-  api/              JSON API under /api: thin, calls app/core (to come)
+  models.py         tables (SPEC §14.1)
+  core/             decides and moves money, no web or AI code: settings, decisions, requests, payouts, memory
+  api/              JSON API under /api: thin, calls app/core
   domain/money.py   dollars <-> cents
   ai/               everything AI, on LangChain + LangGraph
     model.py          LLM connection (any OpenAI-compatible endpoint)
-    base.py           BaseAgent: prompts, tools, normal + streamed output, handovers (one LangGraph graph per agent)
+    base.py           BaseAgent on LangChain's create_agent: prompts, model, tools, run + stream; as_tool
     prompts.py        every prompt, versioned (pin with PROMPT_VERSIONS=name=1)
   payments/paypal.py PayPal REST client
 frontend/           React 19 + TypeScript + HeroUI v3 + Tailwind v4 (Vite)
 tests/              pytest (fake chat model, throwaway database)
 scripts/paypal/     sandbox experiments: payouts; holds/captures/refunds and third-party payees (earlier idea)
+scripts/seed_demo.py the demo group with past purchases (--reset to start over)
 docs/SPEC.md        product spec, architecture and build plan
 ```

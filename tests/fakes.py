@@ -9,6 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.messages.tool import tool_call_chunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field
 
 _ids = count(1)
@@ -34,7 +35,7 @@ class FakeChatModel(BaseChatModel):
         return "fake"
 
     def bind_tools(self, tools, **kwargs):
-        return self.bind(tools=tools, **kwargs)
+        return self.bind(tools=[convert_to_openai_tool(t) for t in tools], **kwargs)
 
     def _reply(self, messages: list[BaseMessage], kwargs: dict) -> AIMessage:
         self.calls.append(kwargs)

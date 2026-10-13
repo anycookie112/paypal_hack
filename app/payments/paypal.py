@@ -1,4 +1,5 @@
-"""PayPal REST client: Orders v2 and Payments v2, the calls proven in scripts/paypal/.
+"""PayPal REST client: Orders v2 (top-ups), Payments v2 and Payouts v1 (reimbursements), as proven in
+scripts/paypal/.
 
 Every call that moves money takes a `request_id` (sent as PayPal-Request-Id), so retrying it can
 never charge twice: PayPal returns the original result for a repeated id.
@@ -103,6 +104,47 @@ class PayPalClient:
                              currency: str = "USD") -> dict:
         return await self.call("POST", f"/v2/payments/captures/{capture_id}/refund",
                                {"amount": money(amount_cents, currency)}, request_id=request_id)
+
+
+    # --- Payouts v1 (reimbursements; proven in scripts/paypal/payouts.py) ------------------------
+
+    async def create_payout(self, sender_batch_id: str, receiver_email: str, amount_cents: int, *, note: str,
+                            subject: str = "You've been paid back", currency: str = "USD") -> dict:
+        """Send one payout and return its batch (with the item). `sender_batch_id` makes it safe to retry: PayPal
+        refuses a repeated id, so a retry returns the batch that already went out instead of paying twice."""
+        body = {
+            "sender_batch_header": {"sender_batch_id": sender_batch_id, "email_subject": subject},
+            "items": [{"recipient_type": "EMAIL", "receiver": receiver_email, "note": note,
+                       "sender_item_id": sender_batch_id,
+                       "amount": {"value": money(amount_cents, currency)["value"], "currency": currency}}],
+        }
+        try:
+            created = await self.call("POST", "/v1/payments/payouts", body)
+            batch_id = created["batch_header"]["payout_batch_id"]
+        except PayPalError as exc:
+            batch_id = existing_batch_id(exc)
+            if not batch_id:
+                raise
+        return await self.get_payout_batch(batch_id)
+
+    async def get_payout_batch(self, batch_id: str) -> dict:
+        return await self.call("GET", f"/v1/payments/payouts/{batch_id}")
+
+    async def get_payout_item(self, item_id: str) -> dict:
+        return await self.call("GET", f"/v1/payments/payouts-item/{item_id}")
+
+    async def cancel_payout_item(self, item_id: str) -> dict:
+        """Only works while the item is UNCLAIMED (no PayPal account yet): the money comes back to us."""
+        return await self.call("POST", f"/v1/payments/payouts-item/{item_id}/cancel")
+
+
+def existing_batch_id(error: PayPalError) -> str:
+    """The batch that already used this sender_batch_id, from PayPal's duplicate error (else "")."""
+    for detail in error.details:
+        if detail.get("field") == "SENDER_BATCH_ID":
+            for link in detail.get("link") or []:
+                return link.get("href", "").rstrip("/").rsplit("/", 1)[-1]
+    return ""
 
 
 def approval_url(order: dict) -> str:

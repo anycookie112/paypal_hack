@@ -22,3 +22,24 @@ def client():
     init_db()
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def session():
+    """A fresh in-memory database per test, for app/core."""
+    from sqlalchemy.pool import StaticPool
+    from sqlmodel import Session, create_engine
+
+    from app import models  # noqa: F401  (register tables)
+
+    memory = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(memory)
+    with Session(memory) as s:
+        yield s
+
+
+@pytest.fixture
+def group(session):
+    """The demo group (tests/demo.py) in the in-memory database."""
+    from tests.demo import make_group
+    return make_group(session)
