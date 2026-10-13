@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
-APP_NAME = "Office Fund"  # working name
+APP_NAME = "Group Fund"  # working name
 
 DATA_DIR = ROOT / "data"
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR / 'app.db'}")

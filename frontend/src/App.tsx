@@ -11,7 +11,7 @@ export default function App() {
     <div className="min-h-screen bg-background text-foreground">
       <header className="border-b border-border bg-surface">
         <div className="mx-auto flex max-w-5xl items-center px-4 py-3">
-          <Link to="/" className="font-semibold">{meta?.app_name ?? 'Office Fund'}</Link>
+          <Link to="/" className="font-semibold">{meta?.app_name ?? 'Group Fund'}</Link>
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-4 pt-8 pb-16">

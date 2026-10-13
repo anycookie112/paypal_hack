@@ -4,7 +4,7 @@
     base.py        BaseAgent: prompts, tools, normal and streamed output, handovers (a LangGraph graph per agent)
     prompts.py     every prompt, versioned
 
-The office fund's agents (office desk, receipt reader, setup assistant) come in week 3 (docs/SPEC.md §8, §15).
+The group fund's agents (group desk, receipt reader, setup assistant) come in week 3 (docs/SPEC.md §8, §15).
 """
 
 from app.ai.base import (AgentResult, BaseAgent, ModelRetry, RunContext, StreamEvent, Usage, agent_prompt,

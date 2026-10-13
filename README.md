@@ -1,9 +1,10 @@
-# Office Fund (working name)
+# Group Fund (working name)
 
-Office essentials without the petty-cash hassle. Employees ask a bot before buying shared office goods (coffee,
-paper, cleaning supplies); code checks the request against the company's budget and settings; after they buy and
-submit the receipt, the purchase is announced to the office, and once a short waiting period passes with no problems
-reported, PayPal Payouts pays them back. The AI drafts and reads; it never approves or moves money.
+For volunteer groups and clubs, where everyone chips in and no one is in charge of buying. Members ask a bot before
+buying something for the group (gloves for the cleanup, snacks for the meeting); the bot says if someone's already on
+it, and code checks the request against the group's budget and settings. After they buy and submit the receipt, the
+purchase is announced to the group, and once a short waiting period passes with no problems reported, PayPal Payouts
+pays them back. The AI coordinates, drafts and reads; it never approves or moves money.
 
 Built for the PayPal AI Hackathon 2026. Sandbox only, no real money. The design and build plan are in
 [docs/SPEC.md](docs/SPEC.md). **Status:** rebuilding from an earlier idea (an ordering assistant for small
@@ -56,7 +57,7 @@ uv run python scripts/paypal/payouts.py send    # sandbox payout to BUYER_EMAIL;
 app/
   main.py           FastAPI app: mounts the API, serves frontend/dist
   config.py db.py   settings from .env; SQLite via SQLModel
-  models.py         tables (office fund tables come in week 1, SPEC §14)
+  models.py         tables (group fund tables come in week 1, SPEC §14)
   api/              JSON API under /api: thin, calls app/core (to come)
   domain/money.py   dollars <-> cents
   ai/               everything AI, on LangChain + LangGraph
