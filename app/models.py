@@ -103,8 +103,9 @@ class Request(SQLModel, table=True):
 class Claim(SQLModel, table=True):
     """A receipt for a confirmed request. An accepted claim (anything but rejected) is a purchase.
 
-    Status: waiting (the hold) | held (a problem was reported; the hold is extended) | paying (sent to PayPal) |
-            paid | unclaimed (no PayPal account at that email yet) | payout_failed | rejected
+    Status: review (a check failed: a PIC looks at it first) | waiting (the hold) | held (a problem was reported; the
+            hold is extended) | paying (sent to PayPal) | paid | unclaimed (no PayPal account at that email yet) |
+            payout_failed | rejected
     """
     id: int | None = Field(default=None, primary_key=True)
     group_id: int = Field(foreign_key="group.id", index=True)
@@ -122,9 +123,14 @@ class Claim(SQLModel, table=True):
     extra_reason: str = ""    # the member's justification for the extra
     extra_status: str = "none"  # none | pending | approved | paying | paid | rejected
     reading_json: str = "{}"  # the receipt reader's output, if it ran
+    reasons_json: str = "[]"  # review: why a PIC has to look at it, written by code
     status: str = Field(default="waiting", index=True)
     submitted_at: datetime = Field(default_factory=utcnow)
     payout_due_at: datetime | None = None
+
+    @property
+    def reasons(self) -> list[str]:
+        return json.loads(self.reasons_json)
 
 
 class Payout(SQLModel, table=True):

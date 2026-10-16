@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import jobs
 from app.api import add_error_handlers, router as api_router
 from app.config import APP_NAME, ROOT
 from app.db import init_db
@@ -14,7 +15,10 @@ FRONTEND_DIST = ROOT / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    payouts = jobs.start()  # pays back claims whose hold is over (off in tests, and without PayPal)
     yield
+    if payouts:
+        payouts.cancel()
 
 
 app = FastAPI(title=APP_NAME, lifespan=lifespan)

@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlmodel import Session
 
-from app.core.requests import ActionError
+from app.core.requests import ActionError, NeedsInfo
 from app.core.setup import NotAllowed
 from app.db import get_session
 from app.models import Group, Member
@@ -36,4 +36,7 @@ def add_error_handlers(app: FastAPI) -> None:
     """An ActionError's message is meant for the member: it goes back as the error's detail."""
     @app.exception_handler(ActionError)
     async def action_error(request: Request, error: ActionError):
-        return JSONResponse({"detail": str(error)}, status_code=403 if isinstance(error, NotAllowed) else 400)
+        body = {"detail": str(error)}
+        if isinstance(error, NeedsInfo):
+            body["missing"] = error.missing  # what to fill in, decided by the rules
+        return JSONResponse(body, status_code=403 if isinstance(error, NotAllowed) else 400)

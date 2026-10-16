@@ -10,6 +10,10 @@ APP_NAME = "Group Fund"  # working name
 
 DATA_DIR = ROOT / "data"
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR / 'app.db'}")
+UPLOADS_DIR = Path(os.environ.get("UPLOADS_DIR", DATA_DIR / "uploads"))  # receipts and item photos
+
+# How often the server pays what's due (app/jobs.py), in seconds; 0 turns it off (tests do).
+PAYOUT_INTERVAL_SECONDS = float(os.environ.get("PAYOUT_INTERVAL_SECONDS", "300"))
 
 # The LLM (app/ai/model.py): "google" (Gemini, native client) or "openai" (any OpenAI-compatible endpoint).
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")

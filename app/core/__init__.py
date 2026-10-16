@@ -6,7 +6,9 @@ HTTP, React or any chat platform.
     settings.py    the group's settings: a closed set with defaults
     setup.py       what the treasurer changes: common items, categories, budgets, settings (admins only)
     decisions.py   the decision engine: confirmed / needs approval / declined / already on it
-    requests.py    telling the group "I'm getting X"; approving and rejecting
+    requests.py    telling the group "I'm getting X"; approving and rejecting; changing the time
+    times.py       "by 11" → the exact deadline
+    claims.py      the receipt for a confirmed request, checked by code; a PIC looks at anything unusual
     payouts.py     the 3-day hold, reports, and releasing payouts through PayPal; the ledger
     memory.py      the group's memory: who's on what, purchases, budgets, patterns, conversations, the agent log
     defaults.py    a starter list of categories and common items for a new group

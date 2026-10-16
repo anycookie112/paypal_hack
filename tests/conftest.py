@@ -8,6 +8,8 @@ import pytest
 _tmp = Path(tempfile.mkdtemp())
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmp / 'test.db'}"
 os.environ["LLM_API_KEY"] = "test-key"
+os.environ["UPLOADS_DIR"] = str(_tmp / "uploads")
+os.environ["PAYOUT_INTERVAL_SECONDS"] = "0"  # never pay anything from a test
 
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlmodel import SQLModel  # noqa: E402

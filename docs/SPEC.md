@@ -588,6 +588,9 @@ reached PayPal, follows up PENDING/UNCLAIMED, returns failed payouts to the bala
 again. 37 core tests against a fake PayPal, and `scripts/paypal/core_payout_check.py` passed against the sandbox
 ($18.40 paid, $0.40 fee, nothing paid during the hold or twice). Not wired to a background loop yet (with the web app).
 Next: claims (step 4) and the request changes from §4.
+*Progress (2026-10-16):* step 4, claims: `app/core/claims.py` (every check in §4.2; anything unusual goes to a PIC,
+who accepts or rejects it), the payout loop (`app/jobs.py`), and Claim and Review pages. Week 1 is done.
+
 *Progress (2026-10-13, week 2 started early):* the setup pages. `app/core/setup.py`: items and categories (admins
 only; items are switched off, never deleted; caps up to the hard ceiling; names and other names can't clash, so the AI
 can tell items apart), the group's name, budget and settings, all checked before any is saved. API: the "View as"

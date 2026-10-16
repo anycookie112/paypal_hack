@@ -3,11 +3,19 @@ import { Link, NavLink, Route, Routes } from 'react-router'
 import { ROLE_LABEL } from './api'
 import { Choice, ErrorAlert, Loading } from './components/ui'
 import { useMember, useMeta } from './hooks'
+import Claim from './pages/Claim'
 import Home from './pages/Home'
 import Items from './pages/Items'
+import Review from './pages/Review'
 import Settings from './pages/Settings'
 
-const NAV = [{ to: '/', label: 'Home' }, { to: '/items', label: 'Items' }, { to: '/settings', label: 'Settings' }]
+const NAV = [
+  { to: '/', label: 'Home' },
+  { to: '/claim', label: 'Claim' },
+  { to: '/review', label: 'Review', pics: true },
+  { to: '/items', label: 'Items' },
+  { to: '/settings', label: 'Settings' },
+]
 
 export default function App() {
   useTheme('system') // follow the OS light/dark setting
@@ -20,7 +28,7 @@ export default function App() {
         <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
           <Link to="/" className="font-semibold">{meta?.app_name ?? 'Group Fund'}</Link>
           <nav className="flex gap-4 text-sm">
-            {NAV.map(({ to, label }) => (
+            {NAV.filter((n) => !n.pics || me?.role !== 'member').map(({ to, label }) => (
               <NavLink key={to} to={to} end
                        className={({ isActive }) => isActive ? 'font-medium' : 'text-muted hover:text-foreground'}>
                 {label}
@@ -45,6 +53,8 @@ export default function App() {
           // Keyed by who's viewing: switching people reloads each page as them.
           <Routes key={me.id}>
             <Route path="/" element={<Home />} />
+            <Route path="/claim" element={<Claim />} />
+            <Route path="/review" element={<Review />} />
             <Route path="/items" element={<Items />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<p className="text-muted">Page not found. <Link to="/" className="link">Go home</Link></p>} />

@@ -79,6 +79,38 @@ export interface SettingsChange {
   values?: Record<string, SettingValue>;
 }
 
+export interface Claimable {
+  request_id: number;
+  item: string;
+  cap_cents: number;       // the most paid back without a PIC
+  status: "on_it" | "expired";
+  until: string | null;
+  needs_photo: boolean;    // the item asks for a photo of where it's kept
+}
+
+export interface ClaimInfo {
+  id: number;
+  item: string;
+  member: string;
+  status: string;          // review | waiting | held | paid | rejected | ...
+  store: string;
+  receipt_date: string | null;
+  total_cents: number;
+  base_cents: number;      // paid after the hold
+  extra_cents: number;     // over the limit: waits for a PIC
+  extra_reason: string;
+  extra_status: string;
+  reasons: string[];       // review: why a PIC has to look at it
+  payout_due_at: string | null;
+  receipt_url: string;
+  photo_url: string;
+}
+
+export interface Submitted {
+  outcome: "accepted" | "review";
+  claim: ClaimInfo;
+}
+
 // Who the app is being used as ("View as", docs/SPEC.md §13): sent with every call.
 let memberId: number | null = null;
 export const setMemberId = (id: number | null) => { memberId = id; };
@@ -107,7 +139,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const detail = (data as { detail?: unknown } | null)?.detail;
-    const message = typeof detail === "string" ? detail : `Request failed (${res.status})`;
+    // FastAPI's own validation errors come as a list: show the first one plainly
+    const first = Array.isArray(detail) ? (detail[0] as { msg?: string; loc?: unknown[] } | undefined) : undefined;
+    const message = typeof detail === "string" ? detail
+      : first?.msg ? `${String(first.loc?.at(-1) ?? "input")}: ${first.msg}` : `Request failed (${res.status})`;
     throw new ApiError(res.status, message, data);
   }
   return data as T;
@@ -122,6 +157,12 @@ export const api = {
   updateCategory: (id: number, body: CategoryChange) => request<Catalog>("PATCH", `/categories/${id}`, body),
   addItem: (body: Required<Omit<ItemChange, "active">>) => request<Catalog>("POST", "/items", body),
   updateItem: (id: number, body: ItemChange) => request<Catalog>("PATCH", `/items/${id}`, body),
+
+  claimable: () => request<Claimable[]>("GET", "/claimable"),
+  submitClaim: (form: FormData) => request<Submitted>("POST", "/claims", form),
+  claimsForReview: () => request<ClaimInfo[]>("GET", "/claims/review"),
+  acceptClaim: (id: number) => request<ClaimInfo>("POST", `/claims/${id}/accept`),
+  rejectClaim: (id: number, note: string) => request<ClaimInfo>("POST", `/claims/${id}/reject`, { note }),
 
   settings: () => request<GroupSettings>("GET", "/settings"),
   saveSettings: (body: SettingsChange) => request<GroupSettings>("PATCH", "/settings", body),
@@ -139,5 +180,17 @@ export function toCents(text: string): number | null {
 
 /** Cents as an editable amount: 2500 → "25", 2550 → "25.50". */
 export const dollars = (cents: number) => (cents % 100 ? (cents / 100).toFixed(2) : String(cents / 100));
+
+/** A file the API only gives to signed-in members (receipts): fetched with the member header, as a local URL. */
+export async function privateFileUrl(url: string): Promise<string> {
+  const res = await fetch(url, { headers: memberId === null ? {} : { "X-Member-Id": String(memberId) } });
+  if (!res.ok) throw new ApiError(res.status, "Couldn't load the file", null);
+  return URL.createObjectURL(await res.blob());
+}
+
+/** "Mon 19 Oct, 08:40" from an API time (UTC, as the app shows times for now). */
+export const when = (iso: string) => new Date(iso).toLocaleString("en-GB", {
+  weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC",
+}) + " UTC";
 
 export const ROLE_LABEL: Record<Role, string> = { admin: "treasurer", approver: "PIC", member: "member" };

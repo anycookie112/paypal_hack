@@ -145,7 +145,8 @@ def member_profile(chat: Chat) -> str:
     if status.claims_waiting:
         lines.append(f"{m.name}'s receipts waiting for payout:")
     for c in status.claims_waiting:
-        due = f"paid on {c.payout_due_at:%a %d %b}" if c.payout_due_at else "payout date not set yet"
+        due = (f"paid on {c.payout_due_at:%a %d %b}" if c.payout_due_at else
+               "a PIC is checking it first" if c.status == "review" else "payout date not set yet")
         held = " (on hold: someone reported a problem)" if c.status == "held" else ""
         lines.append(f"- {c.item}, {cents_to_str(c.total_cents)}: {due}{held} (claim {c.claim_id})")
     questions = memory.questions_for(chat.session, m)

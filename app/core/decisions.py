@@ -26,7 +26,8 @@ from app.core import settings
 from app.domain.money import cents_to_str
 from app.models import Category, Claim, Group, Item, Member, Request, utcnow
 
-ACCEPTED_CLAIMS = ("waiting", "held", "paying", "paid", "unclaimed", "payout_failed")  # purchases: all but rejected
+# Purchases: every claim but a rejected one (one a PIC is still checking counts: it was bought, and will likely be paid).
+ACCEPTED_CLAIMS = ("review", "waiting", "held", "paying", "paid", "unclaimed", "payout_failed")
 
 Outcome = Literal["confirmed", "needs_approval", "declined", "already_on_it"]
 

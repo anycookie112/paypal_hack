@@ -75,7 +75,7 @@ class WaitingClaim:
     claim_id: int
     item: str
     total_cents: int
-    status: str                  # waiting (the usual hold) | held (a problem was reported)
+    status: str                  # review (a PIC is checking it) | waiting (the usual hold) | held (a problem was reported)
     payout_due_at: datetime | None
 
 
@@ -270,7 +270,7 @@ def member_status(session: Session, member: Member, now: datetime | None = None)
     open_requests = session.exec(select(Request).where(Request.member_id == member.id,
                                                        Request.status.in_(("on_it", "needs_approval")))
                                  .order_by(Request.created_at)).all()
-    waiting = session.exec(select(Claim).where(Claim.member_id == member.id, Claim.status.in_(("waiting", "held")))
+    waiting = session.exec(select(Claim).where(Claim.member_id == member.id, Claim.status.in_(("review", "waiting", "held")))
                            .order_by(Claim.submitted_at)).all()
     return MemberStatus(
         name=member.name, role=member.role,
