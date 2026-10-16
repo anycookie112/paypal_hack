@@ -1,7 +1,7 @@
 # Group Fund: progress and to-do
 
 Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how prompts are written is in
-[docs/PROMPTS.md](docs/PROMPTS.md). Updated 2026-10-13.
+[docs/PROMPTS.md](docs/PROMPTS.md). Updated 2026-10-15.
 
 ## Done
 
@@ -32,27 +32,30 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - React + HeroUI: the "View as" switcher (`?as=sam`), an Items page and a Settings page (read-only for all but the
   treasurer).
 
-**Tests:** 128, all passing (one is flaky: see below).
+**Tests:** 156, all passing.
 
-## Next: prompts v4 (agreed in principle, not started)
+## Done since: prompts v4 and v5 (2026-10-15)
 
-From the v3 live run:
-- [ ] **Round hours up:** "by 11" at 8:40 became 2 hours (10:40). Coordinator prompt and `get_item`'s `hours`
-      docstring: whole hours from now, rounded up.
-- [ ] **Member profile in `<chat_context>`:** a `<member>` block (their limit and what's used, open requests, claims
-      waiting, questions for them, PayPal email set). Fixes "you're *already* on it" right after confirming, and
-      replaces the lookup agent's `my_status` tool.
-- [ ] **No half-filled calls to act:** turn 1 sent act a request with no time, so act could only ask "when?".
-      Coordinator: only call act when it has everything it needs.
-- [ ] Rerun `try_chat.py` on Gemini and compare with v3.
+- `<member>` in `<chat_context>`: the member's own requests, limit, receipts waiting and questions for them; replaces
+  the lookup agent's `my_status` tool.
+- Times: the AI passes the member's **own words** (`when_said`), code checks them against what the member wrote (an
+  invented time is refused) and turns them into an **exact deadline** (`app/core/times.py`: "by 11" → 11:00). No
+  "when?" question first: the group's usual time unless they said one. `change_time` moves a deadline.
+- Missing details are decided by code (`NeedsInfo`: "Missing: why it's needed").
+- Subagent descriptions say when (and when not) to use them, without example sentences (models copied them).
+- Every model call and tool result is timed in the agent log (ms, tokens).
+- Live on Gemini (v5): 4/4 turns correct. Each Gemini call took 3–5.5 s that day; our code takes ~20 ms. A turn that
+  goes through `act` or `lookup` costs 4 model calls (~20 s on a slow day); one answered from `<chat_context>`, 1.
+
+## Next
+
+- [ ] Claims (core step 4): see "Still to build".
+- [ ] Optional speed-up: let the coordinator call simple action tools (`get_item`, `change_time`) itself, which would
+      save the action agent's 2 model calls per action (changes the coordinator + subagents design: decide first).
 
 ## Open decisions
 
-- [ ] **Flaky test** `test_a_runaway_reply_is_cut_down`: the 5 calls run at the same time, so their order varies.
-      Fix: compare `sorted(chat.asked)`, and type `asked` as `list[int]` (removes the warnings).
 - [ ] **Output schema examples** are sometimes copied word for word by weak models (Atria): make them templates?
-- [ ] **`.env` defaults:** add `LLM_PROVIDER=google` and `LLM_MODEL=gemini-3.5-flash-lite` (runs pass them inline
-      today).
 - [ ] **Times are shown in UTC** ("10:40 UTC"): add a group timezone (Settings page).
 - [ ] **OpenRouter Gemma** (`google/gemma-4-26b-a4b-it:free`): untested; the free pool was rate-limited (429).
       Retry later, or add our Gemini key to OpenRouter's integrations.

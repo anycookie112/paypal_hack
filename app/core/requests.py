@@ -5,19 +5,29 @@ these same functions. They record feed posts and notifications; the web app list
 """
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlmodel import Session, select
 
 from app.core import settings
-from app.core.decisions import Decision, decide
+from app.core.decisions import Decision, decide, expire_stale
 from app.domain.money import cents_to_str
 from app.models import FeedPost, Group, Item, Member, Notification, Request, utcnow
 
 
 class ActionError(ValueError):
     """The action isn't allowed. The message is shown to the member as-is."""
+
+
+class NeedsInfo(ActionError):
+    """The action can go ahead once the member says more. `missing` is what to ask them, decided by the rules (the AI
+    asks for exactly these, one at a time)."""
+
+    def __init__(self, missing: list[str], why: str = ""):
+        self.missing = missing
+        super().__init__(f"Missing: {'; '.join(missing)}." + (f" {why}" if why else ""))
 
 
 @dataclass
@@ -38,9 +48,9 @@ def thing(session: Session, request: Request) -> str:
 
 def submit_request(session: Session, member: Member, *, item_id: int | None = None, description: str = "",
                    quantity: int = 1, estimate_cents: int | None = None, reason: str = "", insist: bool = False,
-                   hours: int | None = None, now: datetime | None = None) -> Submitted:
+                   until: datetime | None = None, now: datetime | None = None) -> Submitted:
     """`member` tells the group they're getting something. Decided by the rules (app/core/decisions.py).
-    `hours` is how long they need to get it ("by 1 pm"); the group's default when they don't say."""
+    `until` is when they'll have it by ("by 1 pm", app/core/times.py); the group's usual time when they don't say."""
     now = now or utcnow()
     group = session.get(Group, member.group_id)
     item = None
@@ -49,18 +59,17 @@ def submit_request(session: Session, member: Member, *, item_id: int | None = No
         if item is None or item.group_id != group.id or not item.active:
             raise ActionError(f"No common item with id {item_id}.")
     elif not description.strip():
-        raise ActionError("Say what you're getting.")
+        raise NeedsInfo(["what they're getting"])
     if quantity < 1:
         raise ActionError("Quantity must be at least 1.")
     config = settings.get_all(session, group)
-    if hours is not None and not 1 <= hours <= config["on_it_max_hours"]:
-        raise ActionError(f"Pick between 1 and {config['on_it_max_hours']} hours to get it.")
+    hours = _hours_to(until, now, config) if until else None
 
     decision = decide(session, group, member, item=item, estimate_cents=estimate_cents, insist=insist, now=now)
     if decision.outcome == "already_on_it":
         return Submitted(decision, None)
     if decision.outcome == "needs_approval" and not reason.strip():
-        raise ActionError(f"This needs a PIC to approve it: {' '.join(decision.reasons)} Say why it's needed.")
+        raise NeedsInfo(["why it's needed"], f"A PIC has to approve it: {' '.join(decision.reasons)}")
 
     request = Request(group_id=group.id, member_id=member.id, item_id=item_id, description=description.strip(),
                       quantity=quantity, estimate_cents=estimate_cents, reason=reason.strip(),
@@ -68,7 +77,7 @@ def submit_request(session: Session, member: Member, *, item_id: int | None = No
                       cap_cents=decision.cap_cents, hours=hours, created_at=now)
     if request.status == "on_it":
         request.decided_at = now
-        request.on_it_until = now + timedelta(hours=hours or config["on_it_hours"])
+        request.on_it_until = until or now + timedelta(hours=config["on_it_hours"])
     session.add(request)
     session.flush()
 
@@ -126,14 +135,28 @@ def reject_request(session: Session, request_id: int, by: Member, *, note: str =
     return request
 
 
+def change_time(session: Session, request_id: int, by: Member, until: datetime, *,
+                now: datetime | None = None) -> Request:
+    """The member needs a different time to get it ("by 11", "I need till tonight"): `until`, within the group's most.
+    Only their own confirmed request."""
+    now = now or utcnow()
+    request = _own(session, request_id, by)
+    expire_stale(session, request.group_id, now)
+    session.refresh(request)
+    if request.status != "on_it":
+        raise ActionError(f"This request is {request.status.replace('_', ' ')}: there's no time to change.")
+    config = settings.get_all(session, session.get(Group, request.group_id))
+    request.hours, request.on_it_until = _hours_to(until, now, config), until
+    session.add(request)
+    session.commit()
+    session.refresh(request)
+    return request
+
+
 def release_request(session: Session, request_id: int, by: Member) -> Request:
     """"I can't make it after all": the item is free for someone else. Only the person getting it can release it,
     so nobody takes someone else's job. A request still waiting for an approver can be withdrawn the same way."""
-    request = session.get(Request, request_id)
-    if request is None or request.group_id != by.group_id:
-        raise ActionError(f"No request with id {request_id}.")
-    if request.member_id != by.id:
-        raise ActionError(f"Only {session.get(Member, request.member_id).name} can release it.")
+    request = _own(session, request_id, by)
     if request.status not in ("on_it", "needs_approval"):
         raise ActionError(f"This request is already {request.status.replace('_', ' ')}.")
     request.status = "released"
@@ -144,6 +167,27 @@ def release_request(session: Session, request_id: int, by: Member) -> Request:
 
 
 # --- helpers --------------------------------------------------------------------------------------
+
+def _hours_to(until: datetime, now: datetime, config: dict) -> int:
+    """Whole hours from now to the member's deadline, rounded up, checked against the group's most. Kept on the request
+    so an approved one gets the same time from when it's approved."""
+    if until <= now:
+        raise ActionError("That time has already passed: ask them for a later one.")
+    most = config["on_it_max_hours"]
+    if until - now > timedelta(hours=most):
+        raise ActionError(f"That's more than the {most} hours anyone can take to get it: ask them for an earlier time.")
+    return math.ceil((until - now) / timedelta(hours=1))
+
+
+def _own(session: Session, request_id: int, by: Member) -> Request:
+    """`by`'s own request: nobody changes or releases someone else's."""
+    request = session.get(Request, request_id)
+    if request is None or request.group_id != by.group_id:
+        raise ActionError(f"No request with id {request_id}.")
+    if request.member_id != by.id:
+        raise ActionError(f"Only {session.get(Member, request.member_id).name} can change that request.")
+    return request
+
 
 def _pending(session: Session, request_id: int, by: Member) -> Request:
     request = session.get(Request, request_id)

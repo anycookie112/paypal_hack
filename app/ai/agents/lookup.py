@@ -28,16 +28,19 @@ class LookupResult(BaseModel):
 
 class LookupAgent(ChatAgent):
     name = "lookup"
-    description = ("Use this for the group's records beyond the item list: who bought something last, where it was "
-                   "put and whether its payout is on hold; how often an item is bought; budgets; the member's own "
-                   "status (their requests, claims, payouts, questions for them); the group's rules. Returns the "
-                   "facts with their ids.")
+    description = ("Use this for facts that aren't already in <chat_context>: who last bought something, where they "
+                   "put it and whether its payout is on hold (with the claim_id, for \"I can't find X\"); how often "
+                   "an item is bought; this month's budgets for the group and each category; the group's rules, and "
+                   "who the PICs and the treasurer are. Not for which item someone means, who's getting what, what's "
+                   "running low, or the member's own requests, limit, payouts and questions: <items> and <member> "
+                   "already say. Returns the facts with their ids.")
     prompt = "lookup"
     output = LookupResult
 
     def setup(self):
-        # Which item, who's getting it and what's running low are in the item list in the prompt (ChatAgent).
-        for tool in (self.latest_purchase, self.item_history, self.budgets, self.my_status, self.group_rules):
+        # Which item, who's getting it, what's running low and the member's own status are in the prompt
+        # (<items> and <member>, from ChatAgent), so they aren't tools.
+        for tool in (self.latest_purchase, self.item_history, self.budgets, self.group_rules):
             self.register_tool(tool)
 
     def latest_purchase(self, item_id: int, runtime: ToolRuntime[Chat]) -> str:
@@ -69,15 +72,6 @@ class LookupAgent(ChatAgent):
         """This month's budget for the group and each category: the budget, what's spent or promised, what's left."""
         chat = runtime.context
         return facts(memory.group_status(chat.session, chat.group, chat.time))
-
-    def my_status(self, runtime: ToolRuntime[Chat]) -> str:
-        """The member's own status: their monthly limit and what they've used, their open requests (with ids),
-        claims waiting for payout, questions others asked about their purchases (with ids), and whether their
-        PayPal email is set."""
-        chat = runtime.context
-        return facts({"status": memory.member_status(chat.session, chat.member, chat.time),
-                      "questions_for_me": memory.questions_for(chat.session, chat.member),
-                      "paypal_email_set": bool(chat.member.paypal_email)})
 
     def group_rules(self, runtime: ToolRuntime[Chat]) -> str:
         """The group's settings in plain words, and who the PICs (approvers) and the treasurer are."""

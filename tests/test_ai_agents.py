@@ -21,7 +21,7 @@ prompts.define("test_desk", 2, "Be brief. Never guess.", changes="v1 guessed.")
 @dataclass
 class Chat:
     member: str
-    asked: list[str] = field(default_factory=list)
+    asked: list[str | int] = field(default_factory=list)  # what the tools were called with
 
 
 class Desk(BaseAgent):
@@ -332,4 +332,4 @@ def test_a_runaway_reply_is_cut_down():
     model, _ = replies(flood, call("Answer", {"answer": "Priya"}))
     chat = Chat("Priya")
     asyncio.run(Finder(model=model).run("who?", context=chat))
-    assert chat.asked == [0, 1, 2, 3, 4]         # repeats dropped, then only the first five
+    assert sorted(chat.asked) == [0, 1, 2, 3, 4]  # repeats dropped, then only the first five (run at once: any order)

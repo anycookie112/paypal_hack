@@ -26,9 +26,9 @@ def scripted(*steps):
 def gloves_flow(session, final="You're on it: gloves, up to $25, by 12:40. The group can see it."):
     """The coordinator finds gloves in the item list itself (nobody is on them), then asks act to get them."""
     gloves = item(session, "Gloves").id
-    action, _ = scripted(call("get_item", {"item_id": gloves, "hours": 4}),
+    action, _ = scripted(call("get_item", {"item_id": gloves}),
                          call("ActionResult", {"status": "done", "message": "Confirmed (request 1)."}))
-    desk, desk_seen = scripted(call("act", {"request": f"Get item_id {gloves} for Priya, 4 hours."}), final)
+    desk, desk_seen = scripted(call("act", {"request": f"Priya is getting Gloves (item_id {gloves})."}), final)
     unused, _ = scripted()  # lookup isn't needed: which item and who's on it are in the item list
     agent = Coordinator(model=desk, lookup=LookupAgent(model=unused), action=ActionAgent(model=action))
     return agent, desk_seen
@@ -42,9 +42,10 @@ def test_a_message_end_to_end(session, group):
     request = session.exec(select(Request)).one()
     assert (request.status, request.on_it_until) == ("on_it", NOW + timedelta(hours=4))
 
-    # what the coordinator saw: its prompt with who's chatting and the item list, then act's result
+    # what the coordinator saw: its prompt with who's chatting, their status and the item list, then act's result
     prompt = desk_seen[0][0].content
-    assert "Member: Priya (member). Now: Sat 17 Oct, 08:40 UTC.\n\n<items>" in prompt
+    assert "Member: Priya (member). Now: Sat 17 Oct, 08:40 UTC.\n\n<member>\nPriya (member)." in prompt
+    assert "</member>\n\n<items>" in prompt
     assert prompt.endswith("</items>\n</chat_context>")
     assert "<available>" in prompt and "- Gloves (item_id 1; also called work gloves" in prompt
     assert "<finish>" not in prompt  # the coordinator answers in text
@@ -54,10 +55,17 @@ def test_a_message_end_to_end(session, group):
     # the conversation is kept, and every step is in the agent log
     saved = session.exec(select(Message).order_by(Message.id)).all()
     assert [(m.role, m.text[:12]) for m in saved] == [("user", "We're out of"), ("assistant", "You're on it")]
-    steps = [(s.agent, s.event, s.name) for s in session.exec(select(AgentLog).order_by(AgentLog.id))]
+    log = session.exec(select(AgentLog).order_by(AgentLog.id)).all()
+    steps = [(s.agent, s.event, s.name) for s in log if s.event != "model"]
     assert steps[0] == ("coordinator", "tool_call", "act")
     assert ("act", "tool_result", "get_item") in steps
     assert steps[-1] == ("coordinator", "output", "")
+
+    # where the time went: every model call (2 for the coordinator, 2 for act) and tool call is timed
+    models = [(s.agent, json.loads(s.data_json)) for s in log if s.event == "model"]
+    assert [agent for agent, _ in models] == ["coordinator", "act", "act", "coordinator"]
+    assert all(isinstance(data["ms"], int) and "input_tokens" in data for _, data in models)
+    assert all(isinstance(json.loads(s.data_json)["ms"], int) for s in log if s.event == "tool_result")
     assert all(s.conversation_id == answer.conversation_id for s in session.exec(select(AgentLog)))
 
 

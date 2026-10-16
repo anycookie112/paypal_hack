@@ -8,7 +8,8 @@ from sqlmodel import select
 from app.core import settings
 from app.core.decisions import committed_cents, decide
 from app.core.members import set_paypal_email
-from app.core.requests import ActionError, approve_request, reject_request, release_request, submit_request
+from app.core.requests import (ActionError, NeedsInfo, approve_request, change_time, reject_request,
+                               release_request, submit_request)
 from app.models import FeedPost, Notification, Request
 from tests.demo import NOW, item, member, past_purchase, tell
 
@@ -140,7 +141,7 @@ def test_rejecting_tells_the_requester(session, group):
 
 
 def test_bad_input(session, group):
-    with pytest.raises(ActionError, match="Say what"):
+    with pytest.raises(NeedsInfo, match="Missing: what they're getting"):
         submit_request(session, member(session, "Priya"), description="  ")
     with pytest.raises(ActionError, match="No common item"):
         submit_request(session, member(session, "Priya"), item_id=999)
@@ -168,35 +169,52 @@ def test_decide_does_not_write_requests(session, group):
 
 # --- the member's deadline, releasing, justification ----------------------------------------------------
 
-def test_the_member_says_how_long_they_need(session, group):
-    request = tell(session, "Priya", "Gloves", hours=2).request
-    assert request.on_it_until == NOW + timedelta(hours=2)
-    with pytest.raises(ActionError, match="between 1 and 72 hours"):
-        tell(session, "Marco", "Trash bags", hours=100)
+def test_the_member_says_when_they_will_have_it(session, group):
+    request = tell(session, "Priya", "Gloves", until=NOW + timedelta(hours=2, minutes=20)).request
+    assert request.on_it_until == NOW + timedelta(hours=2, minutes=20)  # exactly what they said
+    with pytest.raises(ActionError, match="more than the 72 hours"):
+        tell(session, "Marco", "Trash bags", until=NOW + timedelta(hours=100))
+    with pytest.raises(ActionError, match="already passed"):
+        tell(session, "Marco", "Trash bags", until=NOW - timedelta(minutes=5))
 
 
 def test_an_approved_request_gets_the_time_the_member_asked_for(session, group):
     request = tell(session, "Priya", reason="For the stall", description="Folding table", estimate_cents=40_00,
-                   hours=24).request
+                   until=NOW + timedelta(hours=24)).request
     approved = approve_request(session, request.id, member(session, "Dana"), now=NOW + timedelta(hours=1))
     assert approved.on_it_until == NOW + timedelta(hours=25)
 
 
 def test_anything_a_pic_must_approve_needs_a_reason(session, group):
-    with pytest.raises(ActionError, match="Not on the group's list of common items. Say why it's needed."):
+    with pytest.raises(NeedsInfo, match="Missing: why it's needed. A PIC has to approve it: Not on the group's list") \
+            as missing:
         tell(session, "Priya", description="Folding table", estimate_cents=40_00, reason=" ")
+    assert missing.value.missing == ["why it's needed"]
     assert session.exec(select(Request)).all() == []
     assert tell(session, "Priya", "Gloves", reason="").decision.outcome == "confirmed"  # confirmed needs none
 
 
 def test_only_the_person_getting_it_can_release_it(session, group):
     request = tell(session, "Priya", "Gloves").request
-    with pytest.raises(ActionError, match="Only Priya can release it"):
+    with pytest.raises(ActionError, match="Only Priya can change that request"):
         release_request(session, request.id, member(session, "Sam"))
     assert release_request(session, request.id, member(session, "Priya")).status == "released"
     assert tell(session, "Marco", "Gloves").decision.outcome == "confirmed"  # free again
     with pytest.raises(ActionError, match="already released"):
         release_request(session, request.id, member(session, "Priya"))
+
+
+def test_changing_the_time_on_your_own_request(session, group):
+    request = tell(session, "Priya", "Gloves").request                     # the usual 4 hours: until 12:40
+    later = NOW + timedelta(minutes=20)
+    eleven = NOW.replace(hour=11, minute=0)
+    assert change_time(session, request.id, member(session, "Priya"), eleven, now=later).on_it_until == eleven
+    with pytest.raises(ActionError, match="Only Priya can change that request"):
+        change_time(session, request.id, member(session, "Marco"), eleven, now=later)
+    with pytest.raises(ActionError, match="more than the 72 hours"):
+        change_time(session, request.id, member(session, "Priya"), later + timedelta(hours=100), now=later)
+    with pytest.raises(ActionError, match="is expired: there's no time to change"):
+        change_time(session, request.id, member(session, "Priya"), eleven, now=NOW + timedelta(hours=5))
 
 
 def test_paypal_email(session, group):

@@ -64,8 +64,19 @@ class GroupStatus:
 class OpenRequest:
     request_id: int
     item: str
-    status: str
+    status: str                  # on_it | needs_approval
     cap_cents: int
+    created_at: datetime
+    until: datetime | None       # on_it: when it expires if not bought
+
+
+@dataclass
+class WaitingClaim:
+    claim_id: int
+    item: str
+    total_cents: int
+    status: str                  # waiting (the usual hold) | held (a problem was reported)
+    payout_due_at: datetime | None
 
 
 @dataclass
@@ -75,7 +86,7 @@ class MemberStatus:
     monthly_limit_cents: int
     committed_cents: int
     open_requests: list[OpenRequest] = field(default_factory=list)  # on it, or waiting for an approver
-    claims_waiting: int = 0                                           # receipts in their waiting period
+    claims_waiting: list[WaitingClaim] = field(default_factory=list)  # receipts in their hold, not paid yet
 
 
 @dataclass
@@ -259,13 +270,16 @@ def member_status(session: Session, member: Member, now: datetime | None = None)
     open_requests = session.exec(select(Request).where(Request.member_id == member.id,
                                                        Request.status.in_(("on_it", "needs_approval")))
                                  .order_by(Request.created_at)).all()
-    waiting = session.exec(select(Claim).where(Claim.member_id == member.id, Claim.status == "waiting")).all()
+    waiting = session.exec(select(Claim).where(Claim.member_id == member.id, Claim.status.in_(("waiting", "held")))
+                           .order_by(Claim.submitted_at)).all()
     return MemberStatus(
         name=member.name, role=member.role,
         monthly_limit_cents=settings.get_all(session, group)["member_monthly_limit_cents"],
         committed_cents=committed_cents(session, group, now, member=member),
-        open_requests=[OpenRequest(r.id, thing(session, r), r.status, r.cap_cents) for r in open_requests],
-        claims_waiting=len(waiting),
+        open_requests=[OpenRequest(r.id, thing(session, r), r.status, r.cap_cents, r.created_at, r.on_it_until)
+                       for r in open_requests],
+        claims_waiting=[WaitingClaim(c.id, thing(session, session.get(Request, c.request_id)), c.total_cents, c.status,
+                                     c.payout_due_at) for c in waiting],
     )
 
 
