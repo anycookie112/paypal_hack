@@ -194,6 +194,13 @@ def recent_purchases(session: Session, group: Group, *, item: Item | None = None
 
 
 @dataclass
+class Answer:
+    asked_by: str
+    question: str
+    answer: str
+
+
+@dataclass
 class PurchaseDetails:
     """Who was in charge of a purchase, for "I can't find the gloves": the AI says who got them, then asks them."""
     claim_id: int
@@ -207,16 +214,20 @@ class PurchaseDetails:
     payout_due_at: datetime | None
     open_questions: int
     open_reports: int
+    answers: list[Answer]  # what the buyer said when asked ("on the shelf by the door")
 
 
 def purchase_details(session: Session, claim: Claim) -> PurchaseDetails:
     reports = session.exec(select(Report).where(Report.claim_id == claim.id, Report.status == "open")).all()
+    answered = session.exec(select(Report).where(Report.claim_id == claim.id, Report.kind == "question",
+                                                 Report.status == "answered").order_by(Report.created_at)).all()
     return PurchaseDetails(
         claim_id=claim.id, item=thing(session, session.get(Request, claim.request_id)),
         member=session.get(Member, claim.member_id).name, when=claim.submitted_at, store=claim.store,
         total_cents=claim.total_cents, has_photo=bool(claim.photo_path), status=claim.status,
         payout_due_at=claim.payout_due_at,
         open_questions=sum(r.kind == "question" for r in reports), open_reports=sum(r.kind == "report" for r in reports),
+        answers=[Answer(session.get(Member, q.member_id).name, q.text, q.answer) for q in answered],
     )
 
 

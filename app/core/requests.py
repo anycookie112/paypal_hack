@@ -6,6 +6,7 @@ these same functions. They record feed posts and notifications; the web app list
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -13,6 +14,7 @@ from sqlmodel import Session, select
 
 from app.core import settings
 from app.core.decisions import Decision, decide, expire_stale
+from app.core.states import move
 from app.domain.money import cents_to_str
 from app.models import FeedPost, Group, Item, Member, Notification, Request, utcnow
 
@@ -37,6 +39,11 @@ class Submitted:
 
 
 STATUS_FOR = {"confirmed": "on_it", "needs_approval": "needs_approval", "declined": "declined"}
+
+
+def name_key(name: str) -> str:
+    """Names that count as the same: case, punctuation and a plural "s" don't matter ("Glove" = "gloves")."""
+    return " ".join(w.removesuffix("s") for w in re.findall(r"[a-z0-9]+", name.lower()))
 
 
 def thing(session: Session, request: Request) -> str:
@@ -64,6 +71,12 @@ def submit_request(session: Session, member: Member, *, item_id: int | None = No
         raise ActionError("Quantity must be at least 1.")
     config = settings.get_all(session, group)
     hours = _hours_to(until, now, config) if until else None
+    expire_stale(session, group.id, now)
+    if earlier := _already_asked(session, member, item_id, description):
+        where = ("waiting for a PIC" if earlier.status == "needs_approval" else
+                 f"on it until {earlier.on_it_until:%a %d %b, %H:%M} UTC")
+        raise ActionError(f"{member.name} already asked for this: request {earlier.id} ({thing(session, earlier)}, "
+                          f"{where}). Add to that request instead, or release it first.")
 
     decision = decide(session, group, member, item=item, estimate_cents=estimate_cents, insist=insist, now=now)
     if decision.outcome == "already_on_it":
@@ -71,15 +84,15 @@ def submit_request(session: Session, member: Member, *, item_id: int | None = No
     if decision.outcome == "needs_approval" and not reason.strip():
         raise NeedsInfo(["why it's needed"], f"A PIC has to approve it: {' '.join(decision.reasons)}")
 
+    status = STATUS_FOR[decision.outcome]
     request = Request(group_id=group.id, member_id=member.id, item_id=item_id, description=description.strip(),
-                      quantity=quantity, estimate_cents=estimate_cents, reason=reason.strip(),
-                      status=STATUS_FOR[decision.outcome], reasons_json=json.dumps(decision.reasons),
-                      cap_cents=decision.cap_cents, hours=hours, created_at=now)
-    if request.status == "on_it":
+                      quantity=quantity, estimate_cents=estimate_cents, reason=reason.strip(), status="",
+                      reasons_json=json.dumps(decision.reasons), cap_cents=decision.cap_cents, hours=hours,
+                      created_at=now)
+    if status == "on_it":
         request.decided_at = now
         request.on_it_until = until or now + timedelta(hours=config["on_it_hours"])
-    session.add(request)
-    session.flush()
+    move(session, request, status, by=member, now=now)
 
     if request.status == "on_it":
         _post_on_it(session, request, member)
@@ -107,8 +120,9 @@ def approve_request(session: Session, request_id: int, by: Member, *, cap_cents:
     if cap > ceiling:
         raise ActionError(f"Over the {cents_to_str(ceiling)} limit for one purchase: this needs the group's "
                           "normal process.")
-    request.status, request.cap_cents = "on_it", cap
+    request.cap_cents = cap
     request.decided_by_id, request.decided_at = by.id, now
+    move(session, request, "on_it", by=by, now=now)
     request.on_it_until = now + timedelta(hours=request.hours or config["on_it_hours"])
     session.add(request)
     requester = session.get(Member, request.member_id)
@@ -125,8 +139,8 @@ def reject_request(session: Session, request_id: int, by: Member, *, note: str =
                    now: datetime | None = None) -> Request:
     now = now or utcnow()
     request = _pending(session, request_id, by)
-    request.status, request.decided_by_id, request.decided_at = "rejected", by.id, now
-    session.add(request)
+    request.decided_by_id, request.decided_at = by.id, now
+    move(session, request, "rejected", by=by, now=now)
     notify(session, session.get(Member, request.member_id), "rejected",
             f"{by.name} didn't approve {thing(session, request)}." + (f" {note.strip()}" if note.strip() else ""),
             request_id=request.id)
@@ -153,14 +167,31 @@ def change_time(session: Session, request_id: int, by: Member, until: datetime, 
     return request
 
 
+def add_reason(session: Session, request_id: int, by: Member, reason: str) -> Request:
+    """More on why it's needed, for the PIC deciding: added to the member's own request while it waits for a PIC,
+    and the PICs are told."""
+    request = _own(session, request_id, by)
+    if request.status != "needs_approval":
+        raise ActionError(f"This request is {request.status.replace('_', ' ')}: no PIC is deciding on it.")
+    if not reason.strip():
+        raise ActionError("Say why it's needed.")
+    request.reason = "; ".join(part for part in (request.reason, reason.strip()) if part)
+    session.add(request)
+    for approver in approvers(session, session.get(Group, request.group_id), besides=by):
+        notify(session, approver, "reason_added",
+               f"{by.name} added why they need {thing(session, request)}: \"{reason.strip()}\"", request_id=request.id)
+    session.commit()
+    session.refresh(request)
+    return request
+
+
 def release_request(session: Session, request_id: int, by: Member) -> Request:
     """"I can't make it after all": the item is free for someone else. Only the person getting it can release it,
     so nobody takes someone else's job. A request still waiting for an approver can be withdrawn the same way."""
     request = _own(session, request_id, by)
     if request.status not in ("on_it", "needs_approval"):
         raise ActionError(f"This request is already {request.status.replace('_', ' ')}.")
-    request.status = "released"
-    session.add(request)
+    move(session, request, "released", by=by)
     session.commit()
     session.refresh(request)
     return request
@@ -177,6 +208,23 @@ def _hours_to(until: datetime, now: datetime, config: dict) -> int:
     if until - now > timedelta(hours=most):
         raise ActionError(f"That's more than the {most} hours anyone can take to get it: ask them for an earlier time.")
     return math.ceil((until - now) / timedelta(hours=1))
+
+
+def _already_asked(session: Session, member: Member, item_id: int | None, description: str) -> Request | None:
+    """The member's own open request for the same thing: the same item, or a description whose words take in the
+    other's ("Folding table" and "Folding table for the market stall"). Asking again would put it in front of the
+    PICs twice (a live run did, to add a reason)."""
+    mine = session.exec(select(Request).where(Request.member_id == member.id,
+                                              Request.status.in_(("on_it", "needs_approval")))).all()
+    words = set(name_key(description).split())
+    for request in mine:
+        if item_id is not None and request.item_id == item_id:
+            return request
+        if item_id is None and request.item_id is None:
+            theirs = set(name_key(request.description).split())
+            if words and theirs and (words <= theirs or theirs <= words):
+                return request
+    return None
 
 
 def _own(session: Session, request_id: int, by: Member) -> Request:

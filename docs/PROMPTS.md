@@ -88,10 +88,10 @@ So each of today's agents has these sections:
 `<role>` → `<helpers>` → `<workflow>` → `<rules>` → `<style>` → `<chat_context>`
 
 **Lookup subagent** (read tools, finishes with `LookupResult`):
-`<role>` → `<method>` → `<rules>` → `<finish>` → `<chat_context>`
+`<role>` → `<method>` → `<result>` → `<finish>` → `<chat_context>`
 
-**Action subagent** (action tools, finishes with `ActionResult`):
-`<role>` → `<rules>` → `<state_changes>` → `<finish>` → `<chat_context>`
+**Action subagent** (action tools, finishes with `ActResult`):
+`<role>` → `<rules>` → `<state_changes>` → `<result>` → `<finish>` → `<chat_context>`
 
 ## 4. Writing rules
 

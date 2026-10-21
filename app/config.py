@@ -15,9 +15,12 @@ UPLOADS_DIR = Path(os.environ.get("UPLOADS_DIR", DATA_DIR / "uploads"))  # recei
 # How often the server pays what's due (app/jobs.py), in seconds; 0 turns it off (tests do).
 PAYOUT_INTERVAL_SECONDS = float(os.environ.get("PAYOUT_INTERVAL_SECONDS", "300"))
 
-# The LLM (app/ai/model.py): "google" (Gemini, native client) or "openai" (any OpenAI-compatible endpoint).
+# The LLM (app/ai/model.py): "anthropic" (Claude), "google" (Gemini, native client) or "openai" (any
+# OpenAI-compatible endpoint).
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")  # for "anthropic"; falls back to LLM_API_KEY
+LLM_EFFORT = os.environ.get("LLM_EFFORT", "")  # Claude: low | medium | high | xhigh | max; empty = the model's default
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.atria-asi.ai/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "Atria-Dawn-Preview")
 LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "240"))

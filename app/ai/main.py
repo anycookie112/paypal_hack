@@ -1,7 +1,7 @@
 """Where the AI comes together: the coordinator, joined with its subagents, and `reply` for one chat message.
 
     member ─▶ Coordinator ──lookup──▶ LookupAgent (read tools)  ──▶ LookupResult ─┐
-                   ▲      └──act────▶ ActionAgent (action tools) ──▶ ActionResult ─┤
+                   ▲      └──act────▶ ActionAgent (action tools) ──▶ ActResult ────┤
                    └───────────────────────────────────────────────────────────────┘ ─▶ the reply
 
     answer = await reply(session, member, "We're out of gloves, I'll grab some by 1")
@@ -22,7 +22,7 @@ from app.ai.agents import ActionAgent, LookupAgent
 from app.ai.agents.context import Chat, ChatAgent
 from app.ai.base import StreamEvent
 from app.ai.model import AgentError
-from app.core import memory
+from app.core import memory, states
 from app.models import Conversation, Member
 
 SORRY = "Sorry, I couldn't finish that just now. Please try again in a moment."
@@ -47,6 +47,30 @@ class Coordinator(ChatAgent):
     def setup(self):
         self.register_tool(self.lookup.as_tool("lookup"))
         self.register_tool(self.action.as_tool("act"))
+
+    def sections(self) -> list[str]:
+        return [states.lifecycle()]
+
+    def instructions(self, chat: Chat) -> str:
+        """<chat_context>, plus what moved since the last reply: the conversation has no times, so without it an
+        earlier reply that's out of date looks like a mistake (a live run told Marco "I was wrong" about gloves Priya
+        had bought since)."""
+        return "\n\n".join(part for part in (super().instructions(chat), since_last_reply(chat)) if part)
+
+
+def since_last_reply(chat: Chat) -> str:
+    """The <since_your_last_reply> block: every request and claim that moved in the group since the AI last
+    replied in this conversation (app/core/states.py). Empty before its first reply."""
+    if chat.conversation is None:
+        return ""
+    replies = [m for m in memory.recent_messages(chat.session, chat.conversation) if m.role == "assistant"]
+    if not replies:
+        return ""
+    last = replies[-1].created_at
+    moved = states.moves_since(chat.session, chat.member, last)
+    lines = [f"What moved in the group since your last reply ({last:%H:%M} UTC), oldest first:",
+             *(f"- {m}" for m in moved)] if moved else [f"Nothing moved since your last reply ({last:%H:%M} UTC)."]
+    return "\n".join(["<since_your_last_reply>", *lines, "</since_your_last_reply>"])
 
 
 @dataclass

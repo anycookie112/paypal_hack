@@ -23,6 +23,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.core import settings
+from app.core.states import move
 from app.domain.money import cents_to_str
 from app.models import Category, Claim, Group, Item, Member, Request, utcnow
 
@@ -50,8 +51,7 @@ def expire_stale(session: Session, group_id: int, now: datetime | None = None) -
     stale = session.exec(select(Request).where(Request.group_id == group_id, Request.status == "on_it",
                                                Request.on_it_until <= now)).all()
     for request in stale:
-        request.status = "expired"
-        session.add(request)
+        move(session, request, "expired", now=now)
     if stale:
         session.commit()
     return len(stale)

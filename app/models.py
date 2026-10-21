@@ -223,6 +223,20 @@ class Message(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class StateChange(SQLModel, table=True):
+    """A request or claim moving from one status to another (app/core/states.py): what changed since the AI last
+    replied, and how a purchase got where it is."""
+    id: int | None = Field(default=None, primary_key=True)
+    group_id: int = Field(foreign_key="group.id", index=True)
+    kind: str                 # request | claim
+    record_id: int = Field(index=True)
+    from_status: str          # "" = it was just made
+    to_status: str
+    member_id: int = Field(foreign_key="member.id")  # whose request or claim it is
+    by_id: int | None = Field(default=None, foreign_key="member.id")  # who moved it; None = the app (rules, time, PayPal)
+    at: datetime = Field(default_factory=utcnow, index=True)
+
+
 class AgentLog(SQLModel, table=True):
     """Every step the AI took: why the bot said what it said (docs/SPEC.md §14.2)."""
     id: int | None = Field(default=None, primary_key=True)

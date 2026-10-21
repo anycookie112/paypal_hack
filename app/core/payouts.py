@@ -22,6 +22,7 @@ from sqlmodel import Session, select
 
 from app.core import settings
 from app.core.requests import ActionError, admins, approvers, notify, thing
+from app.core.states import move
 from app.domain.money import cents_to_str
 from app.models import Claim, Group, LedgerEntry, Member, Notification, Payout, Report, Request, utcnow
 from app.payments.paypal import PayPalClient, PayPalError, cents
@@ -68,7 +69,7 @@ def start_hold(session: Session, claim: Claim, now: datetime | None = None) -> C
     request = session.get(Request, claim.request_id)
     if not claim.base_cents:
         claim.base_cents = min(claim.total_cents, request.cap_cents)
-    claim.status = "waiting"
+    move(session, claim, "waiting", now=now)
     claim.payout_due_at = now + timedelta(days=settings.get_all(session, group)["waiting_days"])
     session.add(claim)
     session.commit()
@@ -142,7 +143,7 @@ def report_problem(session: Session, claim_id: int, by: Member, text: str, *, ch
 
     if claim.status in ("waiting", "held"):
         extension = timedelta(days=settings.get_all(session, group)["report_extension_days"])
-        claim.status = "held"
+        move(session, claim, "held", by=by, now=now)
         claim.payout_due_at = max(claim.payout_due_at or now, now + extension)
         session.add(claim)
         held = f"The payout is on hold until {claim.payout_due_at:%a %d %b}."
@@ -185,7 +186,7 @@ def resolve_report(session: Session, report_id: int, by: Member, *, problem: boo
         owner.problems_on_record += 1
         session.add(owner)
         if claim.status in ("waiting", "held"):
-            claim.status = "rejected"
+            move(session, claim, "rejected", by=by, now=now)
             if claim.extra_status in ("pending", "approved"):
                 claim.extra_status = "rejected"
             notify(session, owner, "claim_rejected",
@@ -195,7 +196,8 @@ def resolve_report(session: Session, report_id: int, by: Member, *, problem: boo
         others_open = session.exec(select(Report).where(Report.claim_id == claim.id, Report.kind == "report",
                                                         Report.status == "open", Report.id != report.id)).first()
         if claim.status == "held" and others_open is None:
-            claim.status, claim.payout_due_at = "waiting", now
+            move(session, claim, "waiting", by=by, now=now)
+            claim.payout_due_at = now
             notify(session, owner, "claim_cleared", f"All sorted: your {what} will be paid back shortly.",
                    claim_id=claim.id)
     session.add(claim)
@@ -301,7 +303,8 @@ async def cancel_unclaimed(session: Session, paypal: PayPalClient, claim_id: int
     item = await paypal.cancel_payout_item(payout.paypal_item_id)
     _apply(session, payout, item)
     if payout.kind == "base":
-        claim.status, claim.payout_due_at = "waiting", now
+        move(session, claim, "waiting", by=by, now=now)
+        claim.payout_due_at = now
     else:
         claim.extra_status = "approved"
     session.add(claim)
@@ -319,7 +322,7 @@ def _prepare(session: Session, claim: Claim, kind: str, report: RunReport) -> Pa
     group = session.get(Group, claim.group_id)
     amount = claim.base_cents if kind == "base" else claim.extra_cents
     if amount <= 0:
-        _mark(claim, kind, "paid")
+        _mark(session, claim, kind, "paid")
         session.add(claim)
         session.commit()
         return None
@@ -345,7 +348,7 @@ def _prepare(session: Session, claim: Claim, kind: str, report: RunReport) -> Pa
     session.add(payout)
     session.flush()
     _ledger_once(session, payout, claim, "payout", -amount)
-    _mark(claim, kind, "paying")
+    _mark(session, claim, kind, "paying")
     session.add(claim)
     session.commit()
     session.refresh(payout)
@@ -385,13 +388,13 @@ def _apply(session: Session, payout: Payout, item: dict) -> bool:
         payout.fee_cents = fee
         _ledger_once(session, payout, claim, "payout_fee", -fee)
     if status in SETTLED:
-        _mark(claim, payout.kind, "paid")
+        _mark(session, claim, payout.kind, "paid")
         _notify_once(session, [member], "paid", claim,
                      f"Paid back {amount} for {what}" + (" (the approved extra)" if payout.kind == "extra" else "")
                      + ". Thanks for getting it!", payout_id=payout.id)
     elif status == "UNCLAIMED":
         if payout.kind == "base":
-            claim.status = "unclaimed"
+            move(session, claim, "unclaimed")
         _notify_once(session, [member], "payout_unclaimed", claim,
                      f"PayPal sent {amount} to {member.paypal_email}, which has no PayPal account yet. Sign up with "
                      "that email within 30 days to receive it, or ask the treasurer to change your PayPal email.",
@@ -399,7 +402,7 @@ def _apply(session: Session, payout: Payout, item: dict) -> bool:
     elif status in FAILED:
         _ledger_once(session, payout, claim, "payout_returned", payout.amount_cents)
         if payout.kind == "base":
-            claim.status = "payout_failed"
+            move(session, claim, "payout_failed")
         else:
             claim.extra_status = "approved"  # can be sent again
         _notify_once(session, _treasurers(session, group), "payout_failed", claim,
@@ -411,9 +414,9 @@ def _apply(session: Session, payout: Payout, item: dict) -> bool:
 
 # --- helpers --------------------------------------------------------------------------------------
 
-def _mark(claim: Claim, kind: str, status: str) -> None:
+def _mark(session: Session, claim: Claim, kind: str, status: str) -> None:
     if kind == "base":
-        claim.status = status
+        move(session, claim, status)
     else:
         claim.extra_status = status
 

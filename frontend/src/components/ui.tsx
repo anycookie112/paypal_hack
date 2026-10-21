@@ -1,8 +1,9 @@
 import {
-  Alert, Description, Input, Label, ListBox, Select, Spinner, TextArea, TextField,
+  Alert, Button, Description, Input, Label, ListBox, Modal, Select, Spinner, TextArea, TextField,
 } from '@heroui/react'
 import type { Key } from '@heroui/react'
-import type { ReactNode } from 'react'
+import { useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 
 interface FieldProps {
   label: string
@@ -111,5 +112,48 @@ export function PageTitle({ title, subtitle }: { title: string; subtitle?: React
       <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
       {subtitle && <p className="mt-1 text-muted">{subtitle}</p>}
     </div>
+  )
+}
+
+/** A dialog with a form: Save calls `save`, which returns an error message or null when done. */
+export function FormDialog({ title, onClose, save, children, saveLabel = 'Save' }: {
+  title: string
+  onClose: () => void
+  save: () => Promise<string | null>
+  children: ReactNode
+  saveLabel?: string
+}) {
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    const problem = await save()
+    setSaving(false)
+    if (problem) setError(problem)
+    else onClose()
+  }
+
+  return (
+    <Modal isOpen onOpenChange={(open) => !open && onClose()}>
+      <Modal.Backdrop>
+        <Modal.Container>
+          <Modal.Dialog>
+            <form onSubmit={submit}>
+              <Modal.Header><Modal.Heading>{title}</Modal.Heading></Modal.Header>
+              <Modal.Body className="flex flex-col gap-4">
+                {children}
+                <ErrorAlert title="Not saved" message={error} />
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="ghost" onPress={onClose}>Cancel</Button>
+                <Button type="submit" isDisabled={saving}>{saving ? 'Saving…' : saveLabel}</Button>
+              </Modal.Footer>
+            </form>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
   )
 }

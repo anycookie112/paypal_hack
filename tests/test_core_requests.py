@@ -8,7 +8,7 @@ from sqlmodel import select
 from app.core import settings
 from app.core.decisions import committed_cents, decide
 from app.core.members import set_paypal_email
-from app.core.requests import (ActionError, NeedsInfo, approve_request, change_time, reject_request,
+from app.core.requests import (ActionError, NeedsInfo, add_reason, approve_request, change_time, reject_request,
                                release_request, submit_request)
 from app.models import FeedPost, Notification, Request
 from tests.demo import NOW, item, member, past_purchase, tell
@@ -222,3 +222,32 @@ def test_paypal_email(session, group):
     assert set_paypal_email(session, priya, " priya@example.com ").paypal_email == "priya@example.com"
     with pytest.raises(ActionError, match="doesn't look like an email"):
         set_paypal_email(session, priya, "priya at example")
+
+
+def test_asking_again_for_the_same_thing_is_refused(session, group):
+    """Your own open request for the same thing: once is enough (a live run sent a folding table to the PICs twice)."""
+    gloves = tell(session, "Priya", "Gloves").request
+    with pytest.raises(ActionError, match=rf"Priya already asked for this: request {gloves.id} \(Gloves, on it until"):
+        tell(session, "Priya", "Gloves")
+    table = tell(session, "Marco", description="Folding table", estimate_cents=40_00, reason="For the stall").request
+    for again in ("folding tables", "Folding table for the market stall"):
+        with pytest.raises(ActionError, match=rf"request {table.id} \(Folding table, waiting for a PIC\)"):
+            tell(session, "Marco", description=again, estimate_cents=40_00, reason="For the stall")
+    assert tell(session, "Marco", description="Banner", estimate_cents=20_00,
+                reason="For the stall").decision.outcome == "needs_approval"  # something else is fine
+    release_request(session, table.id, member(session, "Marco"))
+    assert tell(session, "Marco", description="Folding table", estimate_cents=40_00,
+                reason="For the stall").request.status == "needs_approval"  # released: ask again
+
+
+def test_adding_a_reason_for_the_pics(session, group):
+    table = tell(session, "Marco", description="Folding table", estimate_cents=40_00, reason="For the stall").request
+    with pytest.raises(ActionError, match="Only Marco can change that request"):
+        add_reason(session, table.id, member(session, "Priya"), "Flyers")
+    added = add_reason(session, table.id, member(session, "Marco"), "To show the flyers")
+    assert added.reason == "For the stall; To show the flyers"
+    told = session.exec(select(Notification).where(Notification.kind == "reason_added")).all()
+    assert {n.text for n in told} == {"Marco added why they need Folding table: \"To show the flyers\""}
+    gloves = tell(session, "Priya", "Gloves").request
+    with pytest.raises(ActionError, match="This request is on it: no PIC is deciding on it"):
+        add_reason(session, gloves.id, member(session, "Priya"), "We're out")

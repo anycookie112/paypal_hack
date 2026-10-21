@@ -111,6 +111,87 @@ export interface Submitted {
   claim: ClaimInfo;
 }
 
+export interface OpenRequest {
+  request_id: number;
+  item: string;
+  status: "on_it" | "needs_approval";
+  cap_cents: number;
+  created_at: string;
+  until: string | null;
+}
+
+export interface WaitingClaim {
+  claim_id: number;
+  item: string;
+  total_cents: number;
+  status: "review" | "waiting" | "held";
+  payout_due_at: string | null;
+}
+
+export interface Budget {
+  name: string;
+  budget_cents: number;     // 0 = no budget
+  committed_cents: number;  // spent this month + confirmed but not bought yet
+}
+
+export interface Question {
+  question_id: number;
+  item: string;
+  asked_by: string;
+  text: string;
+  when: string;
+}
+
+export interface NotificationItem {
+  id: number;
+  kind: string;
+  text: string;
+  created_at: string;
+  read: boolean;
+  payload: Record<string, number>;
+}
+
+export interface Home {
+  me: {
+    name: string;
+    role: Role;
+    monthly_limit_cents: number;
+    committed_cents: number;
+    open_requests: OpenRequest[];
+    claims_waiting: WaitingClaim[];
+  };
+  paypal_email_set: boolean;
+  questions_for_me: Question[];
+  group: { overall: Budget; categories: Budget[] };
+  notifications: NotificationItem[];
+  unread: number;
+}
+
+export interface FeedItem {
+  post_id: number;
+  kind: "on_it" | "got_it";
+  text: string;
+  member: string;
+  created_at: string;
+  status: string;           // on_it: on_it | claimed | expired | released; got_it: the claim's status
+  until: string | null;
+  likes: number;
+  liked: boolean;
+  claim_id: number | null;
+  can_flag: boolean;        // still in its hold, and not your own
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  text: string;
+  created_at: string;
+}
+
+export type ChatEvent =
+  | { type: "step"; text: string }
+  | { type: "text"; text: string }
+  | { type: "done"; text: string; failed: boolean };
+
 // Who the app is being used as ("View as", docs/SPEC.md §13): sent with every call.
 let memberId: number | null = null;
 export const setMemberId = (id: number | null) => { memberId = id; };
@@ -164,6 +245,20 @@ export const api = {
   acceptClaim: (id: number) => request<ClaimInfo>("POST", `/claims/${id}/accept`),
   rejectClaim: (id: number, note: string) => request<ClaimInfo>("POST", `/claims/${id}/reject`, { note }),
 
+  home: () => request<Home>("GET", "/home"),
+  markRead: (ids?: number[]) => request<{ marked: number }>("POST", "/notifications/read", { ids: ids ?? null }),
+  release: (requestId: number) => request<{ released: number }>("POST", `/requests/${requestId}/release`),
+  answer: (questionId: number, answer: string) =>
+    request<{ answered: number }>("POST", `/questions/${questionId}/answer`, { answer }),
+
+  feed: () => request<FeedItem[]>("GET", "/feed"),
+  like: (postId: number) => request<{ likes: number }>("POST", `/feed/${postId}/like`),
+  askBuyer: (claimId: number, text: string) => request<{ question_id: number }>("POST", `/claims/${claimId}/ask`, { text }),
+  report: (claimId: number, text: string, checked: string) =>
+    request<{ report_id: number }>("POST", `/claims/${claimId}/report`, { text, checked }),
+
+  chat: () => request<{ ai_available: boolean; messages: ChatMessage[] }>("GET", "/chat"),
+
   settings: () => request<GroupSettings>("GET", "/settings"),
   saveSettings: (body: SettingsChange) => request<GroupSettings>("PATCH", "/settings", body),
 };
@@ -180,6 +275,42 @@ export function toCents(text: string): number | null {
 
 /** Cents as an editable amount: 2500 → "25", 2550 → "25.50". */
 export const dollars = (cents: number) => (cents % 100 ? (cents / 100).toFixed(2) : String(cents / 100));
+
+/** Send a chat message; `onEvent` gets each piece of the reply as it's written (see app/api/chat.py). */
+export async function say(text: string, onEvent: (event: ChatEvent) => void): Promise<void> {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(memberId === null ? {} : { "X-Member-Id": String(memberId) }) },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok || !res.body) {
+    const data = await res.json().catch(() => null);
+    const detail = (data as { detail?: unknown } | null)?.detail;
+    throw new ApiError(res.status, typeof detail === "string" ? detail : `Request failed (${res.status})`, data);
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) if (line.trim()) onEvent(JSON.parse(line) as ChatEvent);
+  }
+  if (buffer.trim()) onEvent(JSON.parse(buffer) as ChatEvent);
+}
+
+/** "5 minutes ago", "yesterday", "3 days ago". */
+export function ago(iso: string, now = Date.now()): string {
+  const minutes = Math.floor((now - new Date(iso).getTime()) / 60000);
+  if (minutes < 2) return "just now";
+  if (minutes < 60) return `${minutes} minutes ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours === 1 ? "an hour ago" : `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "yesterday" : `${days} days ago`;
+}
 
 /** A file the API only gives to signed-in members (receipts): fetched with the member header, as a local URL. */
 export async function privateFileUrl(url: string): Promise<string> {

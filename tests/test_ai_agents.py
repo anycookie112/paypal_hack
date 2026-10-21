@@ -73,6 +73,22 @@ def test_prompt_tools_and_context():
     assert desk.prompt_id == "test_desk@v2"
 
 
+class Counting(Desk):
+    def instructions(self, chat: Chat) -> str:
+        return f"Tools called so far: {len(chat.asked)}."
+
+
+def test_a_runs_prompt_stays_the_same_while_the_next_run_sees_whats_new():
+    """Claude refuses a thinking block sent back after its prompt changed: within a run, the prompt is built once."""
+    model, seen = replies(call("whoami"), "Done.", "Again.")
+    desk, chat = Counting(model=model), Chat("Priya")
+    asyncio.run(desk.run("go", context=chat))
+    assert chat.asked == ["whoami"]
+    assert seen[0][0].content == seen[1][0].content and seen[1][0].content.endswith("Tools called so far: 0.\n</context>")
+    asyncio.run(desk.run("go again", context=chat))
+    assert seen[2][0].content.endswith("Tools called so far: 1.\n</context>")
+
+
 def test_pinning_a_prompt_version():
     model, seen = replies("hi")
     desk = Desk(model=model, prompt_version=1)
@@ -249,7 +265,7 @@ def test_an_unexpected_failure_is_logged_and_still_reports_progress(caplog):
         if len(messages) > 2:
             raise ValueError("provider sent garbage")
         return call("whoami")
-    with pytest.raises(AgentError, match="desk: failed unexpectedly \(ValueError\)") as failure:
+    with pytest.raises(AgentError, match=r"desk: failed unexpectedly \(ValueError\)") as failure:
         asyncio.run(Desk(model=FakeChatModel(respond=respond)).run("who?", context=Chat("Priya")))
     assert failure.value.completed == [{"tool": "whoami", "result": "Priya"}]
     assert "desk failed unexpectedly" in caplog.text

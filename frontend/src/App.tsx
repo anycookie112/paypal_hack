@@ -3,7 +3,9 @@ import { Link, NavLink, Route, Routes } from 'react-router'
 import { ROLE_LABEL } from './api'
 import { Choice, ErrorAlert, Loading } from './components/ui'
 import { useMember, useMeta } from './hooks'
+import Chat from './pages/Chat'
 import Claim from './pages/Claim'
+import Feed from './pages/Feed'
 import Home from './pages/Home'
 import Items from './pages/Items'
 import Review from './pages/Review'
@@ -11,6 +13,8 @@ import Settings from './pages/Settings'
 
 const NAV = [
   { to: '/', label: 'Home' },
+  { to: '/chat', label: 'Chat' },
+  { to: '/feed', label: 'Feed' },
   { to: '/claim', label: 'Claim' },
   { to: '/review', label: 'Review', pics: true },
   { to: '/items', label: 'Items' },
@@ -53,6 +57,8 @@ export default function App() {
           // Keyed by who's viewing: switching people reloads each page as them.
           <Routes key={me.id}>
             <Route path="/" element={<Home />} />
+            <Route path="/chat" element={<Chat />} />
+            <Route path="/feed" element={<Feed />} />
             <Route path="/claim" element={<Claim />} />
             <Route path="/review" element={<Review />} />
             <Route path="/items" element={<Items />} />

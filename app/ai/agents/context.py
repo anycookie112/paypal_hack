@@ -6,14 +6,15 @@ agent log (docs/SPEC.md §14.2), so "why did the bot say that?" can always be an
 
 import json
 import time
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass
 from datetime import datetime
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse, ToolCallRequest
 from langchain_core.messages import AIMessage, ToolMessage
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 from sqlmodel import Session
 
-from app.ai.base import BaseAgent
+from app.ai.base import BaseAgent, ToolResult
 from app.core import memory
 from app.domain.money import cents_to_str
 from app.models import Conversation, Group, Member, utcnow
@@ -69,6 +70,8 @@ class _LogSteps(AgentMiddleware):
         self._log(request.runtime.context, "model", getattr(request.model, "model", "") or "",
                   {"ms": _ms(started), "input_tokens": usage.get("input_tokens"),
                    "output_tokens": usage.get("output_tokens"), "tool_calls": len(reply.tool_calls) if reply else 0})
+        for rejected in (m for m in response.result if isinstance(m, ToolMessage) and m.status == "error"):
+            self._log(request.runtime.context, "rejected", rejected.name or "", rejected.content)  # by _CheckResult
 
     def _result(self, request: ToolCallRequest, result, started: float) -> None:
         if isinstance(result, ToolMessage):
@@ -198,18 +201,45 @@ def item_list(board: memory.ItemBoard, now: datetime) -> str:
     return "<items>\n" + "\n\n".join(sections) + "\n</items>"
 
 
-def facts(value) -> str:
-    """A tool's result as JSON the model reads easily: money in dollars ("cap": "$25.00"), times in words."""
-    def tidy(v):
-        if is_dataclass(v):
-            names = [f.name for f in fields(v)] + [n for n, a in vars(type(v)).items() if isinstance(a, property)]
-            v = {n: getattr(v, n) for n in names}
-        if isinstance(v, dict):
-            return {k.removesuffix("_cents"): cents_to_str(x) if k.endswith("_cents") and isinstance(x, int)
-                    else tidy(x) for k, x in v.items()}
-        if isinstance(v, (list, tuple)):
-            return [tidy(x) for x in v]
-        if isinstance(v, datetime):
-            return when(v)
-        return v
-    return json.dumps(tidy(value), ensure_ascii=False)
+# --- typed results: what tools return and agents finish with, so code can check one against the other ---------------
+
+class Record(BaseModel):
+    """A fact a tool returned, as JSON the model reads and copies: money in dollars ("$25.00"), times in words
+    ("Sat 17 Oct, 11:00 UTC"). `type` says which kind; no other fields are allowed, so a record can't pass as
+    another kind."""
+    model_config = ConfigDict(extra="forbid")
+
+
+def returned(results: list[ToolResult], kinds: TypeAdapter) -> list[Record]:
+    """The records this run's tools returned (refusals and errors aren't records)."""
+    found = []
+    for result in results:
+        if result.ok:
+            try:
+                found.append(kinds.validate_json(result.content))
+            except ValidationError:
+                pass
+    return found
+
+
+def not_returned(field: str, records: list[Record], seen: list[Record]) -> list[str]:
+    """A problem for each record in `field` that isn't exactly one a tool returned, with the fields that differ from
+    the closest one."""
+    problems = []
+    for i, record in enumerate(records):
+        if record in seen:
+            continue
+        alike = [r for r in seen if r.type == record.type]
+        if not alike:
+            problems.append(f"{field}[{i}]: no tool returned a {record.type} in this run")
+            continue
+        closest = min(alike, key=lambda r: len(_differences(record, r)))
+        problems.append(f"{field}[{i}]: " + "; ".join(
+            f"{key} is {json.dumps(wrote, ensure_ascii=False)} but the tool returned "
+            f"{json.dumps(was, ensure_ascii=False)}" for key, wrote, was in _differences(record, closest)))
+    return problems
+
+
+def _differences(a: Record, b: Record) -> list[tuple[str, object, object]]:
+    one, other = a.model_dump(mode="json"), b.model_dump(mode="json")
+    return [(key, one.get(key), other.get(key)) for key in sorted(one.keys() | other.keys()) if one.get(key) != other.get(key)]

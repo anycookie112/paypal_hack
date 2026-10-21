@@ -5,8 +5,8 @@
     context.py   Chat: who's chatting, what every tool gets
 """
 
-from app.ai.agents.action import ActionAgent, ActionResult
+from app.ai.agents.action import ActionAgent, ActResult
 from app.ai.agents.context import Chat
 from app.ai.agents.lookup import LookupAgent, LookupResult
 
-__all__ = ["ActionAgent", "ActionResult", "Chat", "LookupAgent", "LookupResult"]
+__all__ = ["ActionAgent", "ActResult", "Chat", "LookupAgent", "LookupResult"]

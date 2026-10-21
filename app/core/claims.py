@@ -30,6 +30,7 @@ from app.core import settings
 from app.core.decisions import ACCEPTED_CLAIMS, expire_stale
 from app.core.payouts import start_hold
 from app.core.requests import ActionError, NeedsInfo, approvers, notify, thing
+from app.core.states import move
 from app.domain.money import cents_to_str
 from app.models import Claim, FeedPost, Group, Item, Member, Request, utcnow
 
@@ -151,17 +152,17 @@ def submit_claim(session: Session, by: Member, request_id: int, *, receipt: Uplo
                   receipt_path=_save(receipt, receipt_hash, receipt_kind),
                   receipt_hash=receipt_hash, store=store.strip(), receipt_date=receipt_date, total_cents=total_cents,
                   base_cents=base, extra_cents=extra, extra_reason=extra_reason.strip() if extra else "",
-                  extra_status="pending" if extra else "none", reasons_json=json.dumps(reasons), submitted_at=now)
+                  extra_status="pending" if extra else "none", reasons_json=json.dumps(reasons), submitted_at=now,
+                  status="")
     if photo:
         claim.photo_path = _save(photo, hashlib.sha256(photo.data).hexdigest(), photo_kind)
-    request.status = "claimed"
-    session.add_all([request, claim])
+    move(session, request, "claimed", by=by, now=now)
+    session.add(claim)
     session.flush()
 
     what = thing(session, request)
     if reasons:
-        claim.status = "review"
-        session.add(claim)
+        move(session, claim, "review", by=by, now=now)
         for pic in approvers(session, group, besides=by):
             notify(session, pic, "claim_review", f"{by.name}'s receipt for {what} ({cents_to_str(total_cents)}) "
                    f"needs a look: {' '.join(reasons)}", claim_id=claim.id)
@@ -188,7 +189,7 @@ def accept_claim(session: Session, claim_id: int, by: Member, *, now: datetime |
 def reject_claim(session: Session, claim_id: int, by: Member, *, note: str = "") -> Claim:
     """A PIC looked at a flagged claim and it can't be paid back."""
     claim = _in_review(session, claim_id, by)
-    claim.status = "rejected"
+    move(session, claim, "rejected", by=by)
     if claim.extra_status == "pending":
         claim.extra_status = "rejected"
     session.add(claim)

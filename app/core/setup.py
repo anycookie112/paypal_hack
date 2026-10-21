@@ -8,13 +8,12 @@ Names have to be told apart: the AI finds items by the words in their names and 
 so two active items can't share a name, and "Glove" counts as the same name as "Gloves".
 """
 
-import re
 from dataclasses import dataclass
 
 from sqlmodel import Session, select
 
 from app.core import settings
-from app.core.requests import ActionError
+from app.core.requests import ActionError, name_key
 from app.domain.money import cents_to_str
 from app.models import Category, Group, Item, Member
 
@@ -129,7 +128,7 @@ def update_category(session: Session, by: Member, category_id: int, *, name: str
 def _check_category_name(session: Session, category: Category) -> None:
     for other in session.exec(select(Category).where(Category.group_id == category.group_id,
                                                      Category.id != category.id)):
-        if _key(other.name) == _key(category.name):
+        if name_key(other.name) == name_key(category.name):
             raise ActionError(f"There's already a category called {other.name}.")
 
 
@@ -189,17 +188,17 @@ def _check_item(session: Session, group: Group, item: Item) -> None:
         raise ActionError(f"Proof must be one of {', '.join(PROOFS)}.")
     others = session.exec(select(Item).where(Item.group_id == group.id, Item.id != item.id)).all()
     for other in others:
-        if _key(other.name) == _key(item.name):
+        if name_key(other.name) == name_key(item.name):
             off = " (switched off: switch it back on instead)" if not other.active else ""
             raise ActionError(f"There's already an item called {other.name}{off}.")
     if not item.active:
         return
     # Only active items have to be told apart: switched-off ones aren't offered to the AI.
-    names = {_key(n): other.name for other in others if other.active
+    names = {name_key(n): other.name for other in others if other.active
              for n in [other.name, *_aliases(other.aliases)]}
     for name in [item.name, *_aliases(item.aliases)]:
-        if _key(name) in names:
-            raise ActionError(f"\"{name}\" is already a name for {names[_key(name)]}.")
+        if name_key(name) in names:
+            raise ActionError(f"\"{name}\" is already a name for {names[name_key(name)]}.")
 
 
 # --- the group and its settings --------------------------------------------------------------------
@@ -268,15 +267,10 @@ def _aliases(text: str) -> list[str]:
 
 def _clean_aliases(aliases: list[str], name: str) -> list[str]:
     """Other names, tidied: no blanks, no repeats, not the item's own name."""
-    seen, cleaned = {_key(name)}, []
+    seen, cleaned = {name_key(name)}, []
     for alias in aliases:
         alias = " ".join(alias.replace(",", " ").split())
-        if alias and _key(alias) not in seen:
-            seen.add(_key(alias))
+        if alias and name_key(alias) not in seen:
+            seen.add(name_key(alias))
             cleaned.append(alias)
     return cleaned
-
-
-def _key(name: str) -> str:
-    """Names that count as the same: case, punctuation and a plural "s" don't matter ("Glove" = "gloves")."""
-    return " ".join(w.removesuffix("s") for w in re.findall(r"[a-z0-9]+", name.lower()))

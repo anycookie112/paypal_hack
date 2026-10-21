@@ -9,17 +9,19 @@ from sqlmodel import select
 from app.ai.agents import ActionAgent, LookupAgent
 from app.ai.main import SORRY, SORRY_PARTLY, Coordinator, reply, stream_reply
 from app.models import AgentLog, Message, Request
-from tests.demo import NOW, item, member
-from tests.fakes import FakeChatModel, call
+from tests.demo import NOW, item, member, tell
+from tests.fakes import FakeChatModel, call, copying
 
 
 def scripted(*steps):
-    """A fake model giving these replies in order; it keeps every message list it was sent."""
+    """A fake model giving these replies in order (a step can be a function of the messages so far); it keeps
+    every message list it was sent."""
     seen, steps = [], iter(steps)
 
     def respond(messages, tools):
         seen.append(messages)
-        return next(steps)
+        step = next(steps)
+        return step(messages) if callable(step) else step
     return FakeChatModel(respond=respond), seen
 
 
@@ -27,7 +29,7 @@ def gloves_flow(session, final="You're on it: gloves, up to $25, by 12:40. The g
     """The coordinator finds gloves in the item list itself (nobody is on them), then asks act to get them."""
     gloves = item(session, "Gloves").id
     action, _ = scripted(call("get_item", {"item_id": gloves}),
-                         call("ActionResult", {"status": "done", "message": "Confirmed (request 1)."}))
+                         copying("ActResult", "actions", "done"))
     desk, desk_seen = scripted(call("act", {"request": f"Priya is getting Gloves (item_id {gloves})."}), final)
     unused, _ = scripted()  # lookup isn't needed: which item and who's on it are in the item list
     agent = Coordinator(model=desk, lookup=LookupAgent(model=unused), action=ActionAgent(model=action))
@@ -49,8 +51,10 @@ def test_a_message_end_to_end(session, group):
     assert prompt.endswith("</items>\n</chat_context>")
     assert "<available>" in prompt and "- Gloves (item_id 1; also called work gloves" in prompt
     assert "<finish>" not in prompt  # the coordinator answers in text
-    assert json.loads(desk_seen[1][-1].content) == {"status": "done", "message": "Confirmed (request 1).",
-                                                    "missing": []}
+    act_said = json.loads(desk_seen[1][-1].content)  # typed fields, checked against what get_item returned
+    assert (act_said["status"], act_said["missing"], act_said["refusal"]) == ("done", [], None)
+    assert [(a["type"], a["outcome"], a["request_id"]) for a in act_said["actions"]] == [
+        ("item_requested", "confirmed", 1)]
 
     # the conversation is kept, and every step is in the agent log
     saved = session.exec(select(Message).order_by(Message.id)).all()
@@ -80,8 +84,7 @@ def test_follow_ups_see_the_conversation(session, group):
 
 def test_when_the_coordinator_fails_the_member_gets_an_apology(session, group):
     looping = FakeChatModel(respond=lambda messages, tools: call("lookup", {"request": f"again {len(messages)}"}))
-    lookup = LookupAgent(model=FakeChatModel(respond=lambda m, t: call("LookupResult",
-                                                                       {"status": "found", "answer": "ok"})))
+    lookup = LookupAgent(model=FakeChatModel(respond=lambda m, t: call("LookupResult", {"status": "not_found"})))
     answer = asyncio.run(reply(session, member(session, "Priya"), "hi", now=NOW,
                                agent=Coordinator(model=looping, lookup=lookup, max_model_calls=2)))
     assert answer.failed and answer.text == SORRY  # lookups change nothing
@@ -113,3 +116,26 @@ def test_an_apology_says_when_something_already_happened(session, group):
     answer = asyncio.run(reply(session, member(session, "Priya"), "gloves", agent=agent, now=NOW))
     assert answer.failed and answer.text == SORRY_PARTLY
     assert session.exec(select(Request)).one().status == "on_it"
+
+
+def test_the_coordinator_hears_what_moved_since_its_last_reply(session, group):
+    """A live run told Marco "I was wrong" about gloves Priya had bought after it spoke: nothing told it they had
+    moved since."""
+    marco = member(session, "Marco")
+    first, seen = scripted("Priya is getting them.")
+    asyncio.run(reply(session, marco, "Is anyone getting gloves?", agent=Coordinator(model=first), now=NOW))
+    assert seen[0][0].content.endswith("</items>\n</chat_context>")  # nothing said yet: nothing moved since
+    said = session.exec(select(Message).where(Message.role == "assistant")).one()
+    said.created_at = NOW  # the reply's time, on the test's clock
+    session.add(said)
+    session.commit()
+    gloves = tell(session, "Priya", "Gloves", now=NOW + timedelta(minutes=1)).request
+
+    second, seen = scripted("She's on it.")
+    asyncio.run(reply(session, marco, "And now?", agent=Coordinator(model=second), now=NOW + timedelta(minutes=2)))
+    prompt = seen[0][0].content
+    assert prompt.index("\n<lifecycle>\n") < prompt.index("\n<chat_context>\n")  # fixed, so before the run's facts
+    assert prompt.endswith(
+        "<since_your_last_reply>\nWhat moved in the group since your last reply (08:40 UTC), oldest first:\n"
+        f"- 08:41 UTC Priya's Gloves (request {gloves.id}): new → getting it (the rules confirmed it)\n"
+        "</since_your_last_reply>\n</chat_context>")

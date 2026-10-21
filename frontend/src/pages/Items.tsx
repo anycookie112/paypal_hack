@@ -1,9 +1,9 @@
-import { Button, Card, Chip, Modal, Switch, Table, toast } from '@heroui/react'
+import { Button, Card, Chip, Switch, Table, toast } from '@heroui/react'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { api, dollars, money, toCents } from '../api'
 import type { Catalog, CatalogCategory, CatalogItem, Proof } from '../api'
-import { Choice, ErrorAlert, Field, Loading, PageTitle } from '../components/ui'
+import { Choice, ErrorAlert, Field, FormDialog, Loading, PageTitle } from '../components/ui'
 import { useMember } from '../hooks'
 
 const PROOF_LABEL: Record<Proof, string> = { receipt: 'Receipt', receipt_photo: 'Receipt + photo' }
@@ -136,48 +136,6 @@ function ItemTable({ category, canEdit, onSwitch, onEdit }: {
         </Table.Content>
       </Table.ScrollContainer>
     </Table>
-  )
-}
-
-/** A dialog with a form: Save calls `save`, which returns an error message or null when done. */
-function FormDialog({ title, onClose, save, children }: {
-  title: string
-  onClose: () => void
-  save: () => Promise<string | null>
-  children: React.ReactNode
-}) {
-  const [error, setError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setSaving(true)
-    const problem = await save()
-    setSaving(false)
-    if (problem) setError(problem)
-    else onClose()
-  }
-
-  return (
-    <Modal isOpen onOpenChange={(open) => !open && onClose()}>
-      <Modal.Backdrop>
-        <Modal.Container>
-          <Modal.Dialog>
-            <form onSubmit={submit}>
-              <Modal.Header><Modal.Heading>{title}</Modal.Heading></Modal.Header>
-              <Modal.Body className="flex flex-col gap-4">
-                {children}
-                <ErrorAlert title="Not saved" message={error} />
-              </Modal.Body>
-              <Modal.Footer>
-                <Button variant="ghost" onPress={onClose}>Cancel</Button>
-                <Button type="submit" isDisabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
-              </Modal.Footer>
-            </form>
-          </Modal.Dialog>
-        </Modal.Container>
-      </Modal.Backdrop>
-    </Modal>
   )
 }
 

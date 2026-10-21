@@ -1,7 +1,7 @@
 # Group Fund: progress and to-do
 
 Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how prompts are written is in
-[docs/PROMPTS.md](docs/PROMPTS.md). Updated 2026-10-16.
+[docs/PROMPTS.md](docs/PROMPTS.md). Updated 2026-10-21.
 
 ## Done
 
@@ -32,7 +32,7 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - React + HeroUI: the "View as" switcher (`?as=sam`), an Items page and a Settings page (read-only for all but the
   treasurer).
 
-**Tests:** 179, all passing.
+**Tests:** 203, all passing.
 
 ## Done since: prompts v4 and v5 (2026-10-15)
 
@@ -61,11 +61,66 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
   page for PICs (the receipt, the reasons, accept or reject).
 - **The claim table has a new column:** reset the local demo database with `uv run python scripts/seed_demo.py --reset`.
 
-## Next
+## Done since: member pages (2026-10-19)
 
-- [ ] Member home page: budget left, my requests and claims, notifications.
-- [ ] The feed (on it / got it posts, 👍, "report a problem").
-- [ ] Chat page (the coordinator in the web app, with streaming).
+- **Home:** the member's month (limit used), what they're getting (hand in the receipt, or "can't get it" to release),
+  what's being paid back and when, questions others asked them (answered right there), news (notifications, mark
+  read), and the group's budgets this month.
+- **Feed** (`app/core/feed.py`): on-it and got-it posts with their status, 👍, and "something's wrong?" during the hold:
+  first ask the buyer; only if that doesn't sort it, a formal report that goes privately to the treasurer.
+- **Chat** (`app/api/chat.py`): the coordinator in the web app, the reply streamed as it's written (newline-delimited
+  JSON), with plain-words steps ("Checking the group's records…"); the tools' insides never reach the browser.
+- Tried end to end in the browser with Gemini: Marco was told Priya is on the gloves; a 👍; Marco asked about the bags,
+  Priya answered from her home page, and Marco saw the answer.
+
+## Done since: Claude Haiku 5.5 (2026-10-21)
+
+- `LLM_PROVIDER=anthropic` (LangChain's Anthropic client, `ANTHROPIC_API_KEY`, optional `LLM_EFFORT`). Each agent run now
+  builds its prompt once (Claude refuses a thinking block sent back after its prompt changed).
+- Demo story in the browser with Haiku: every model call 1–2 s, chat turns 2–8 s (Gemini Flash Lite: 3–23 s), replies
+  correct and closer to the prompt.
+
+## Done since: typed results and the state log (2026-10-21)
+
+- **Typed subagent results, checked by code.** Every tool returns a typed record (`ItemRequested`, `Purchase`,
+  `Budgets`, …); lookup and act finish by copying those records exactly (`LookupResult` / `ActResult`, no free-text
+  fields). `BaseAgent` runs the output's `check()` against the run's tool results and sends any difference back to the
+  model (twice, then the run fails). In the Haiku run, every record was copied right the first time; the hedge and
+  the made-up "request screen" are gone. act also has `cant_do` and a fixed list of what can be `missing`.
+- **Asking twice is refused by code:** a member's second open request for the same thing (same item, or the same
+  words) points to the first. `add_reason` adds to a request waiting for a PIC and tells the PICs.
+- **A reason must be the member's own words** (checked like `when_said`).
+- **Lookup sees the buyer's answers** ("on the shelf by the door").
+- **States** (`app/core/states.py`): one table of every request and claim status and the moves between them, with
+  why; every status change goes through `move()`, which refuses a move the table doesn't have and logs it
+  (`StateChange`). Coordinator **v7** gets the map (`<lifecycle>`, generated from the table) and what moved since its
+  last reply (`<since_your_last_reply>`): v6 had told Marco "I was wrong" about gloves Priya bought after it spoke.
+- Prompts: lookup v5, action v6, coordinator v6 → v7. Coordinator calls read ~950 more tokens (mostly the fixed map).
+- **New table** (`statechange`): `uv run python scripts/seed_demo.py --reset` for an old local database.
+
+## Found in the Haiku demo runs (to fix)
+
+- [x] The AI can't see answers to questions (now in the `purchase` record).
+- [x] No way to add a reason to a request waiting for a PIC (`add_reason`; asking twice is refused).
+- [x] The budget hedge ("I can't confirm these figures are up to date") came from the coordinator's brief: v6 asks only
+      for what the member needs, and lookup can only return records.
+- [ ] Haiku adds "I can't promise they'll approve it" to almost every reply; uses he/she, not names. (Prompt v8.)
+- [ ] A list item that needs no reason still stores the member's whole sentence as its reason.
+- [ ] One clean run isn't proof: the reliability script should replay the demo turns several times.
+
+## Next (in order)
+
+1. [ ] **PIC approvals queue:** requests waiting for a PIC (with the reason, and approve / reject) next to the receipt
+       reviews, so the demo story doesn't stop at "waiting for a PIC".
+2. [ ] **Reliability script:** each demo turn 5–10 times on Haiku, wrong answers counted per turn and prompt version.
+3. [ ] **PayPal side of the demo:** top-up with PayPal Checkout, the ledger, and a demo "fast-forward" for the hold.
+4. [ ] Receipt reader.
+5. [ ] Deploy to Render; demo video, Devpost write-up, README.
+
+- [ ] Admin: a members page.
+- [ ] PIC approvals in chat; the confirm card for formal reports in chat.
+- [ ] A per-member scratchpad (preferences, availability) only if wanted later: what changed since the last reply now
+      comes from the state log, which code writes.
 - [ ] Optional speed-up: let the coordinator call simple action tools (`get_item`, `change_time`) itself, which would
       save the action agent's 2 model calls per action (changes the coordinator + subagents design: decide first).
 
@@ -80,12 +135,7 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 
 ## Still to build (SPEC §15)
 
-- [ ] **Member pages:** home (budget left, my requests and claims, notifications), new request, claim, feed (👍,
-      report a problem).
-- [ ] **Admin pages:** members, approvals queue and alerts, ledger with a demo "fast-forward", top-up with PayPal
-      Checkout.
-- [ ] **Chat page** with streaming (`stream_reply`); PIC approvals in chat; the confirm card for formal reports.
 - [ ] Receipt reader (its own pipeline, vision model): pre-fills the claim form; code compares.
 - [ ] Model retry / fallback to a second provider.
-- [ ] Telegram or Discord bot (week 4), reliability script (~15 requests), deploy to Render.
+- [ ] No chat bot (Telegram/Discord): a plain web app, no sign-in (decided 2026-10-21).
 - [ ] Demo video, Devpost write-up, README.

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from itertools import count
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
 from langchain_core.messages.tool import tool_call_chunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -18,6 +18,16 @@ _ids = count(1)
 def call(name: str, args: dict | None = None, text: str = "") -> AIMessage:
     """A reply that calls a tool (optionally after some text)."""
     return AIMessage(text, tool_calls=[{"name": name, "args": args or {}, "id": f"call_{next(_ids)}"}])
+
+
+def copying(output: str, field: str, status: str, **fields):
+    """A reply step (a function of the messages so far) that finishes with `output`, putting every result the tools
+    returned in this run into `field`, copied exactly, as the subagents are told to."""
+    def step(messages: list[BaseMessage]) -> AIMessage:
+        records = [json.loads(m.content) for m in messages
+                   if isinstance(m, ToolMessage) and m.status != "error" and m.name != output]
+        return call(output, {"status": status, field: records, **fields})
+    return step
 
 
 def tool_names(tools: list[dict]) -> list[str]:

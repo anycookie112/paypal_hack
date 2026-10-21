@@ -25,7 +25,9 @@
 **Finishing.** An agent with an `output` model must finish by calling it (its name is the model's class name, e.g.
 `LookupResult`): a plain-text answer is sent back with a reminder until it does. Its arguments are validated;
 mistakes go back to the model to fix. This is Gemini CLI's `complete_task` and Goose's
-`final_output`.
+`final_output`. An output model with a `check(results, context)` method is also checked against what this run's
+tools returned (`ToolResult`s): every problem it finds goes back to the model to fix, and after `max_check_fails`
+rejected tries the run fails, so a result that doesn't match the records never reaches the caller.
 
 **Errors are tool results, not crashes.** A tool that raises `ActionError` (a rule said no: "Marco is already getting
 them") sends that message back to the model. Any other exception is logged and the model is told the tool failed.
@@ -43,6 +45,7 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal
 
+import anthropic
 import openai
 from langchain.agents import create_agent
 from langchain.agents.middleware import (AgentMiddleware, ModelCallLimitMiddleware, ModelRequest, ModelResponse,
@@ -55,6 +58,7 @@ from langchain_core.exceptions import ModelError
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
+from langgraph.config import get_config
 from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel
@@ -67,9 +71,11 @@ from app.core.requests import ActionError
 log = logging.getLogger(__name__)
 
 # Failures that aren't bugs: limits, and the provider being down, slow, rate-limited or refusing (ModelError covers
-# every LangChain provider; openai.APIError the OpenAI-compatible client's own).
+# every LangChain provider; openai.APIError and anthropic.APIError the clients' own).
+_RUN_PROMPT = "run_prompt"  # where a run keeps its system prompt (BaseAgent.initialize)
+
 _FAILURES = (ModelCallLimitExceededError, ToolCallLimitExceededError, GraphRecursionError, ModelError,
-             openai.APIError, TimeoutError)
+             openai.APIError, anthropic.APIError, TimeoutError)
 
 
 @dataclass
@@ -100,6 +106,7 @@ class BaseAgent:
     max_tool_calls: ClassVar[int] = 10
     max_repeats: ClassVar[int] = 2                # the same tool with the same arguments; more is refused
     max_calls_per_reply: ClassVar[int] = 5        # tool calls one reply may make; the rest are dropped
+    max_check_fails: ClassVar[int] = 2            # results its `check` rejected; one more fails the run
     timeout_seconds: ClassVar[float | None] = None  # the whole run; None = only the provider's per-call timeout
 
     def __init__(self, *, model: BaseChatModel | None = None, prompt_version: int | None = None,
@@ -126,10 +133,16 @@ class BaseAgent:
         """Override to add instructions that depend on the run, e.g. who's chatting and today's date."""
         return ""
 
+    def sections(self) -> list[str]:
+        """Override to add generated sections that are the same on every run (e.g. a map written from code), after
+        the versioned prompt: kept before the run's context, so the prompt's start stays the same for caching."""
+        return []
+
     def system_prompt(self, context: Any) -> str:
-        """The whole prompt for one run (docs/PROMPTS.md): the versioned prompt, then the generated <finish>
-        section when there's an `output`, then `instructions()` in a <context_tag> block, always last."""
-        parts = [self.prompt_text, finish_section(self.output) if self.output else ""]
+        """The whole prompt for one run (docs/PROMPTS.md): the versioned prompt, any generated `sections()`, then the
+        generated <finish> section when there's an `output`, then `instructions()` in a <context_tag> block, always
+        last."""
+        parts = [self.prompt_text, *self.sections(), finish_section(self.output) if self.output else ""]
         if extra := self.instructions(context):
             parts.append(f"<{self.context_tag}>\n{extra}\n</{self.context_tag}>")
         return "\n\n".join(p for p in parts if p)
@@ -162,7 +175,17 @@ class BaseAgent:
         if self._graph is None:
             @dynamic_prompt
             def system_prompt(request: ModelRequest) -> str:
-                return self.system_prompt(request.runtime.context)
+                # Built on a run's first model call and reused for the rest of it, so the history every call sees is
+                # only ever added to. Claude rejects a thinking block sent back after anything before it changed (a
+                # live run: act confirmed gloves, the item list in <chat_context> changed, and the coordinator's next
+                # call was refused), and an unchanged prefix is what prompt caching reuses. The next run (the next
+                # message, or the next time a subagent is asked) builds it fresh.
+                kept = get_config().get("configurable", {}).get(_RUN_PROMPT)
+                if kept is None:
+                    return self.system_prompt(request.runtime.context)
+                if "text" not in kept:
+                    kept["text"] = self.system_prompt(request.runtime.context)
+                return kept["text"]
 
             self._graph = create_agent(
                 # ToolStrategy: the result is always a tool call to finish with (docs/PROMPTS.md §5), whatever the
@@ -178,6 +201,7 @@ class BaseAgent:
                             *self.middleware(),
                             ToolErrorMiddleware(on_error=_back_to_the_model),
                             _RefuseRepeats(self.max_repeats),
+                            *([_CheckResult(self.name, self.output, self.max_check_fails)] if self.output else []),
                             _CheckReply(self.output, self.max_calls_per_reply)])
         return self._graph
 
@@ -230,7 +254,7 @@ class BaseAgent:
     @property
     def _config(self) -> dict:
         # A backstop under the call limits (which give the clearer error): a few graph steps per model call.
-        return {"recursion_limit": 10 * (self.max_model_calls + 2)}
+        return {"recursion_limit": 10 * (self.max_model_calls + 2), "configurable": {_RUN_PROMPT: {}}}
 
     def as_tool(self, name: str | None = None, description: str | None = None) -> BaseTool:
         """This agent as a subagent another agent can ask. It runs with the same context but none of the asking
@@ -316,6 +340,57 @@ class _CheckReply(AgentMiddleware):
 
     async def awrap_model_call(self, request, handler):
         return self._check(await handler(request))
+
+
+@dataclass
+class ToolResult:
+    """One tool call of this run, for an output's `check`: what the tool returned, or why it didn't run."""
+    name: str
+    ok: bool       # False: the tool said no (a rule, a permission) or failed
+    content: str   # what the model was sent
+
+
+REJECTED = "Not accepted:"  # how a result `check` rejected starts
+
+
+class _CheckResult(AgentMiddleware):
+    """Runs the output model's `check` on the result, against the tool results this run has seen, before the run may
+    end with it. Problems go back to the model as the result call's tool message; the model fixes them on its next
+    call. After `limit` rejected results the run fails with the problems."""
+
+    def __init__(self, agent: str, output: type[BaseModel], limit: int):
+        super().__init__()
+        self.agent, self.output, self.limit = agent, output.__name__, limit
+
+    def _check(self, request: ModelRequest, response: ModelResponse) -> ModelResponse:
+        finished = response.structured_response
+        if finished is None or not hasattr(finished, "check"):
+            return response
+        messages = request.state["messages"]
+        problems = finished.check(_tool_results(messages, self.output), request.runtime.context)
+        if not problems:
+            return response
+        rejected = sum(1 for m in messages if isinstance(m, ToolMessage) and m.name == self.output
+                       and str(m.content).startswith(REJECTED))
+        if rejected >= self.limit:
+            raise AgentError(f"{self.agent}: its {self.output} didn't match what its tools returned: "
+                             f"{'; '.join(problems)}")
+        text = "\n".join([f"{REJECTED} {self.output} doesn't match what the tools returned. Fix it and call "
+                          f"{self.output} again:", *(f"- {p}" for p in problems)])
+        result = [ToolMessage(text, tool_call_id=m.tool_call_id, name=m.name, status="error")
+                  if isinstance(m, ToolMessage) and m.name == self.output else m for m in response.result]
+        return ModelResponse(result=result, structured_response=None)
+
+    def wrap_model_call(self, request, handler):
+        return self._check(request, handler(request))
+
+    async def awrap_model_call(self, request, handler):
+        return self._check(request, await handler(request))
+
+
+def _tool_results(messages: Sequence[BaseMessage], output: str) -> list[ToolResult]:
+    return [ToolResult(m.name or "", m.status != "error", str(m.content)) for m in messages
+            if isinstance(m, ToolMessage) and m.name != output]
 
 
 class _MustFinish(AgentMiddleware):

@@ -319,8 +319,8 @@ Treasurer setup ─▶ Setup assistant ─▶ draft items ─▶ the treasurer r
 | Agent | Triggered by | Tools | Returns |
 |---|---|---|---|
 | Coordinator (to build) | Every chat message | `lookup(request)`, `act(request)` | The reply to the member |
-| Lookup agent (`app/ai/agents/lookup.py`) | The coordinator | Read tools (below) | `LookupResult`: found / not_found + the facts, with ids |
-| Action agent (`app/ai/agents/action.py`) | The coordinator | Action tools (below) | `ActionResult`: done / needs_info / refused + message + what's missing |
+| Lookup agent (`app/ai/agents/lookup.py`) | The coordinator | Read tools (below) | `LookupResult`: found / not_found + the tools' typed facts, copied and checked by code |
+| Action agent (`app/ai/agents/action.py`) | The coordinator | Action tools (below) | `ActResult`: done / needs_info / refused / cant_do + the tools' typed results (checked by code), the refusal copied, what's missing from a fixed list |
 | Receipt reader | A receipt upload (code) | None | `ReceiptReading` |
 | Setup assistant | The treasurer pastes a list | None | Draft common items |
 
@@ -543,7 +543,8 @@ Request (member, item?) ─▶ Claim (receipt) ─▶ Payout (PayPal ids)
 - **Errors go back to the model, never crash the run:** bad arguments, a rule saying no (`ActionError`, its own
   words), any other tool error (logged; "failed unexpectedly"), the same call repeated too often (refused).
 - **Subagents finish with a schema** (Gemini CLI's `complete_task`, Goose's `final_output`): `LookupResult` /
-  `ActionResult`; plain text is sent back until they do. A subagent that fails (out of calls or time, the
+  `ActResult`; plain text is sent back until they do. Every field is typed: the tools return typed records,
+  and code checks the result against them (`check`), sending any difference back to fix (twice, then it fails). A subagent that fails (out of calls or time, the
   provider, a bug) returns `{"status": "failed", "reason", "completed"}` to the coordinator: `completed` lists
   what its tools already did, since an action can happen before the agent fails. Subagents can't call other agents.
 - **Limits per agent**, set when it's created: model calls, tool calls, repeats of the same call, a timeout.

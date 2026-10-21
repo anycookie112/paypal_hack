@@ -10,6 +10,8 @@ HTTP, React or any chat platform.
     times.py       "by 11" → the exact deadline
     claims.py      the receipt for a confirmed request, checked by code; a PIC looks at anything unusual
     payouts.py     the 3-day hold, reports, and releasing payouts through PayPal; the ledger
+    feed.py        what the group sees: on it / got it posts and 👍
+    notifications.py  what one member has been told
     memory.py      the group's memory: who's on what, purchases, budgets, patterns, conversations, the agent log
     defaults.py    a starter list of categories and common items for a new group
 """
