@@ -106,6 +106,37 @@ export interface ClaimInfo {
   photo_url: string;
 }
 
+/** A request waiting for a PIC's yes or no. */
+export interface WaitingRequest {
+  id: number;
+  member: string;
+  item: string;
+  quantity: number;
+  estimate_cents: number | null;
+  cap_cents: number;       // what the rules suggest paying back up to; the PIC can change it
+  reason: string;          // the member's own words
+  reasons: string[];       // why the rules sent it to a PIC
+  hours: number | null;    // how long they said they need once approved; null = the group's usual time
+  created_at: string;
+}
+
+/** An amount paid over a request's limit: paid only if a PIC approves it. */
+export interface WaitingExtra {
+  claim_id: number;
+  member: string;
+  item: string;
+  total_cents: number;
+  base_cents: number;      // paid after the hold anyway
+  extra_cents: number;
+  extra_reason: string;
+  receipt_url: string;
+}
+
+export interface Approvals {
+  requests: WaitingRequest[];
+  extras: WaitingExtra[];
+}
+
 export interface Submitted {
   outcome: "accepted" | "review";
   claim: ClaimInfo;
@@ -244,6 +275,12 @@ export const api = {
   claimsForReview: () => request<ClaimInfo[]>("GET", "/claims/review"),
   acceptClaim: (id: number) => request<ClaimInfo>("POST", `/claims/${id}/accept`),
   rejectClaim: (id: number, note: string) => request<ClaimInfo>("POST", `/claims/${id}/reject`, { note }),
+  approvals: () => request<Approvals>("GET", "/approvals"),
+  approveRequest: (id: number, cap: string) => request<WaitingRequest>("POST", `/requests/${id}/approve`, { cap }),
+  rejectRequest: (id: number, note: string) => request<WaitingRequest>("POST", `/requests/${id}/reject`, { note }),
+  approveExtra: (claimId: number) => request<WaitingExtra>("POST", `/claims/${claimId}/extra/approve`),
+  rejectExtra: (claimId: number, note: string) =>
+    request<WaitingExtra>("POST", `/claims/${claimId}/extra/reject`, { note }),
 
   home: () => request<Home>("GET", "/home"),
   markRead: (ids?: number[]) => request<{ marked: number }>("POST", "/notifications/read", { ids: ids ?? null }),

@@ -32,7 +32,7 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - React + HeroUI: the "View as" switcher (`?as=sam`), an Items page and a Settings page (read-only for all but the
   treasurer).
 
-**Tests:** 203, all passing.
+**Tests:** 208, all passing.
 
 ## Done since: prompts v4 and v5 (2026-10-15)
 
@@ -110,8 +110,8 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 
 ## Next (in order)
 
-1. [ ] **PIC approvals queue:** requests waiting for a PIC (with the reason, and approve / reject) next to the receipt
-       reviews, so the demo story doesn't stop at "waiting for a PIC".
+1. [x] **PIC approvals queue** (Review page, `app/api/approvals.py`): requests waiting for a PIC (the rules' reasons, the
+       member's reason, approve with the cap or say no with a note), extras paid over a limit, and flagged receipts.
 2. [ ] **Reliability script:** each demo turn 5–10 times on Haiku, wrong answers counted per turn and prompt version.
 3. [ ] **PayPal side of the demo:** top-up with PayPal Checkout, the ledger, and a demo "fast-forward" for the hold.
 4. [ ] Receipt reader.
