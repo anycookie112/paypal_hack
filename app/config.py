@@ -12,6 +12,10 @@ DATA_DIR = ROOT / "data"
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR / 'app.db'}")
 UPLOADS_DIR = Path(os.environ.get("UPLOADS_DIR", DATA_DIR / "uploads"))  # receipts and item photos
 
+# The Lab page's "Reset the demo" (app/api/lab.py) deletes everything and seeds the demo group again. Set 0 on a
+# deployment whose data should survive.
+LAB_RESET = os.environ.get("LAB_RESET", "1") != "0"
+
 # How often the server pays what's due (app/jobs.py), in seconds; 0 turns it off (tests do).
 PAYOUT_INTERVAL_SECONDS = float(os.environ.get("PAYOUT_INTERVAL_SECONDS", "300"))
 

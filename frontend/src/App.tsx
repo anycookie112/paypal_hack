@@ -1,5 +1,5 @@
 import { useTheme } from '@heroui/react'
-import { Link, NavLink, Route, Routes } from 'react-router'
+import { Link, NavLink, Route, Routes, useLocation } from 'react-router'
 import { ROLE_LABEL } from './api'
 import { Choice, ErrorAlert, Loading } from './components/ui'
 import { useMember, useMeta } from './hooks'
@@ -8,6 +8,7 @@ import Claim from './pages/Claim'
 import Feed from './pages/Feed'
 import Home from './pages/Home'
 import Items from './pages/Items'
+import Lab from './pages/Lab'
 import Review from './pages/Review'
 import Settings from './pages/Settings'
 
@@ -19,17 +20,20 @@ const NAV = [
   { to: '/review', label: 'Review', pics: true },
   { to: '/items', label: 'Items' },
   { to: '/settings', label: 'Settings' },
+  { to: '/lab', label: 'Lab' },
 ]
 
 export default function App() {
   useTheme('system') // follow the OS light/dark setting
   const meta = useMeta()
   const { me, members, viewAs, error } = useMember()
+  const wide = useLocation().pathname === '/lab'  // four chats and the log side by side
+  const width = wide ? 'max-w-[1600px]' : 'max-w-5xl'
 
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="border-b border-border bg-surface">
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
+        <div className={`mx-auto flex ${width} flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3`}>
           <Link to="/" className="font-semibold">{meta?.app_name ?? 'Group Fund'}</Link>
           <nav className="flex gap-4 text-sm">
             {NAV.filter((n) => !n.pics || me?.role !== 'member').map(({ to, label }) => (
@@ -50,7 +54,7 @@ export default function App() {
           )}
         </div>
       </header>
-      <main className="mx-auto max-w-5xl px-4 pt-8 pb-16">
+      <main className={`mx-auto ${width} px-4 pt-8 pb-16`}>
         <ErrorAlert title="Couldn't load the group" message={error} />
         {!me && !error && <Loading />}
         {me && (
@@ -63,6 +67,7 @@ export default function App() {
             <Route path="/review" element={<Review />} />
             <Route path="/items" element={<Items />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/lab" element={<Lab />} />
             <Route path="*" element={<p className="text-muted">Page not found. <Link to="/" className="link">Go home</Link></p>} />
           </Routes>
         )}

@@ -121,7 +121,6 @@ def moves_since(session: Session, viewer: Member, since: datetime, *, limit: int
     """What moved in the viewer's group after `since`, oldest first: every request (the whole group sees who's
     getting what), and claims only when they're the viewer's own or the viewer is a PIC. Why a claim was held or
     rejected is only for its member, the PICs and the treasurer."""
-    from app.core.requests import thing  # requests imports this module
     rows = session.exec(select(StateChange).where(StateChange.group_id == viewer.group_id, StateChange.at > since)
                         .order_by(StateChange.at.desc(), StateChange.id.desc()).limit(limit)).all()
     out = []
@@ -129,14 +128,25 @@ def moves_since(session: Session, viewer: Member, since: datetime, *, limit: int
         own = row.member_id == viewer.id
         if row.kind == "claim" and not (own or viewer.can_approve):
             continue
-        record = session.get(Request if row.kind == "request" else Claim, row.record_id)
-        request = record if row.kind == "request" else session.get(Request, record.request_id)
         private = (row.kind, row.from_status, row.to_status) in PRIVATE
-        why = _TABLES[row.kind][1][(row.from_status, row.to_status)]
-        out.append(Moved(row.at, row.kind, row.record_id, session.get(Member, row.member_id).name,
-                         thing(session, request), row.from_status, row.to_status,
-                         "" if private and not (own or viewer.can_approve) else why))
+        out.append(_moved(session, row, show_why=not private or own or viewer.can_approve))
     return out
+
+
+def recent_moves(session: Session, group_id: int, *, limit: int = 30) -> list[Moved]:
+    """Every move in the group, newest first, with why: for the Lab page (app/api/lab.py), which shows everything."""
+    rows = session.exec(select(StateChange).where(StateChange.group_id == group_id)
+                        .order_by(StateChange.at.desc(), StateChange.id.desc()).limit(limit)).all()
+    return [_moved(session, row, show_why=True) for row in rows]
+
+
+def _moved(session: Session, row: StateChange, *, show_why: bool) -> Moved:
+    from app.core.requests import thing  # requests imports this module
+    record = session.get(Request if row.kind == "request" else Claim, row.record_id)
+    request = record if row.kind == "request" else session.get(Request, record.request_id)
+    why = _TABLES[row.kind][1][(row.from_status, row.to_status)]
+    return Moved(row.at, row.kind, row.record_id, session.get(Member, row.member_id).name, thing(session, request),
+                 row.from_status, row.to_status, why if show_why else "")
 
 
 def lifecycle() -> str:

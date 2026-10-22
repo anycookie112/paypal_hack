@@ -80,7 +80,7 @@ export default function Chat() {
   )
 }
 
-function Bubble({ role, text }: { role: 'user' | 'assistant'; text: string }) {
+export function Bubble({ role, text }: { role: 'user' | 'assistant'; text: string }) {
   const mine = role === 'user'
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>

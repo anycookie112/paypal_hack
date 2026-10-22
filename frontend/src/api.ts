@@ -223,6 +223,26 @@ export type ChatEvent =
   | { type: "text"; text: string }
   | { type: "done"; text: string; failed: boolean };
 
+/** One step from the agent log (app/api/lab.py): a model call, a tool call or result, a rejected result, a reply. */
+export interface LabEntry {
+  id: number;
+  at: string;
+  member: string;     // whose conversation
+  agent: string;      // coordinator | lookup | act
+  prompt_id: string;  // e.g. "coordinator@v8"
+  event: "model" | "tool_call" | "tool_result" | "rejected" | "output" | "error";
+  name: string;
+  data: unknown;
+}
+
+export interface LabStatus {
+  requests: { id: number; member: string; item: string; status: "on_it" | "needs_approval"; until: string | null;
+              cap_cents: number }[];
+  claims: { id: number; member: string; item: string; status: string; total_cents: number;
+            payout_due_at: string | null }[];
+  moves: { at: string; text: string }[];  // newest first
+}
+
 // Who the app is being used as ("View as", docs/SPEC.md §13): sent with every call.
 let memberId: number | null = null;
 export const setMemberId = (id: number | null) => { memberId = id; };
@@ -237,8 +257,14 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = memberId === null ? {} : { "X-Member-Id": String(memberId) };
+/** The member header: `as` (the Lab page talks as several people at once), else whoever "View as" picked. */
+const asWho = (as?: number): Record<string, string> => {
+  const id = as ?? memberId;
+  return id === null ? {} : { "X-Member-Id": String(id) };
+};
+
+async function request<T>(method: string, path: string, body?: unknown, as?: number): Promise<T> {
+  const headers = asWho(as);
   const init: RequestInit = { method, headers };
   if (body instanceof FormData) {
     init.body = body;
@@ -294,7 +320,11 @@ export const api = {
   report: (claimId: number, text: string, checked: string) =>
     request<{ report_id: number }>("POST", `/claims/${claimId}/report`, { text, checked }),
 
-  chat: () => request<{ ai_available: boolean; messages: ChatMessage[] }>("GET", "/chat"),
+  chat: (as?: number) => request<{ ai_available: boolean; messages: ChatMessage[] }>("GET", "/chat", undefined, as),
+
+  labLog: (after: number) => request<LabEntry[]>("GET", `/lab/log?after=${after}`),
+  labStatus: () => request<LabStatus>("GET", "/lab/status"),
+  labReset: () => request<{ reset: boolean }>("POST", "/lab/reset"),
 
   settings: () => request<GroupSettings>("GET", "/settings"),
   saveSettings: (body: SettingsChange) => request<GroupSettings>("PATCH", "/settings", body),
@@ -313,11 +343,12 @@ export function toCents(text: string): number | null {
 /** Cents as an editable amount: 2500 → "25", 2550 → "25.50". */
 export const dollars = (cents: number) => (cents % 100 ? (cents / 100).toFixed(2) : String(cents / 100));
 
-/** Send a chat message; `onEvent` gets each piece of the reply as it's written (see app/api/chat.py). */
-export async function say(text: string, onEvent: (event: ChatEvent) => void): Promise<void> {
+/** Send a chat message (as `as`, else the "View as" member); `onEvent` gets each piece of the reply as it's written
+ *  (see app/api/chat.py). */
+export async function say(text: string, onEvent: (event: ChatEvent) => void, as?: number): Promise<void> {
   const res = await fetch("/api/chat", {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...(memberId === null ? {} : { "X-Member-Id": String(memberId) }) },
+    headers: { "Content-Type": "application/json", ...asWho(as) },
     body: JSON.stringify({ text }),
   });
   if (!res.ok || !res.body) {

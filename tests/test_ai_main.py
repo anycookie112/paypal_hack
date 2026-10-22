@@ -136,6 +136,7 @@ def test_the_coordinator_hears_what_moved_since_its_last_reply(session, group):
     prompt = seen[0][0].content
     assert prompt.index("\n<lifecycle>\n") < prompt.index("\n<chat_context>\n")  # fixed, so before the run's facts
     assert prompt.endswith(
-        "<since_your_last_reply>\nWhat moved in the group since your last reply (08:40 UTC), oldest first:\n"
+        "<since_your_last_reply>\nYour replies were true when you sent them. What moved in the group since your last "
+        "reply (08:40 UTC), oldest first:\n"
         f"- 08:41 UTC Priya's Gloves (request {gloves.id}): new → getting it (the rules confirmed it)\n"
         "</since_your_last_reply>\n</chat_context>")

@@ -68,7 +68,8 @@ def since_last_reply(chat: Chat) -> str:
         return ""
     last = replies[-1].created_at
     moved = states.moves_since(chat.session, chat.member, last)
-    lines = [f"What moved in the group since your last reply ({last:%H:%M} UTC), oldest first:",
+    lines = [f"Your replies were true when you sent them. What moved in the group since your last reply "
+             f"({last:%H:%M} UTC), oldest first:",
              *(f"- {m}" for m in moved)] if moved else [f"Nothing moved since your last reply ({last:%H:%M} UTC)."]
     return "\n".join(["<since_your_last_reply>", *lines, "</since_your_last_reply>"])
 

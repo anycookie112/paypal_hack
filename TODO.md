@@ -32,7 +32,7 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - React + HeroUI: the "View as" switcher (`?as=sam`), an Items page and a Settings page (read-only for all but the
   treasurer).
 
-**Tests:** 208, all passing.
+**Tests:** 211, all passing.
 
 ## Done since: prompts v4 and v5 (2026-10-15)
 
@@ -98,6 +98,16 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - Prompts: lookup v5, action v6, coordinator v6 → v7. Coordinator calls read ~950 more tokens (mostly the fixed map).
 - **New table** (`statechange`): `uv run python scripts/seed_demo.py --reset` for an old local database.
 
+## Done since: reliability script, coordinator v8, the Lab (2026-10-21)
+
+- `scripts/reliability.py`: the demo story N times against the real model, each turn checked by code (records and
+  reply), pass rates per turn, every reply saved to `data/reliability/`. `--prompts coordinator=7` compares versions.
+- 10 runs of v7: 62/70; "did Priya say where the gloves are?" passed 2/10 (5 runs said "I was wrong earlier").
+  **v8** (answer what was asked; earlier replies were true when sent) and a framed `<since_your_last_reply>`: **70/70**.
+- **Lab page** (`/lab`, `app/api/lab.py`): the four members' chats side by side with their demo lines, the AI log for
+  everyone (subagent steps indented, model calls optional, click a step for its data), open requests, receipts and
+  the latest moves, and "Reset the demo" (`LAB_RESET=0` turns it off). The demo seed is now `app/core/demo.py`.
+
 ## Found in the Haiku demo runs (to fix)
 
 - [x] The AI can't see answers to questions (now in the `purchase` record).
@@ -106,13 +116,16 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
       for what the member needs, and lookup can only return records.
 - [ ] Haiku adds "I can't promise they'll approve it" to almost every reply; uses he/she, not names. (Prompt v8.)
 - [ ] A list item that needs no reason still stores the member's whole sentence as its reason.
-- [ ] One clean run isn't proof: the reliability script should replay the demo turns several times.
+- [x] One clean run isn't proof: `scripts/reliability.py` (v8: 70/70).
+- [ ] The coordinator paraphrases the member in its briefs ("they need it to show the flyers"), so act's quote check
+      refuses the reason and act retries: 5 of 10 runs spent 2–4 extra calls on the table turn. Same for an invented
+      `when_said: "now"`. Idea: give act the member's last messages in its `<chat_context>` to copy from.
 
 ## Next (in order)
 
 1. [x] **PIC approvals queue** (Review page, `app/api/approvals.py`): requests waiting for a PIC (the rules' reasons, the
        member's reason, approve with the cap or say no with a note), extras paid over a limit, and flagged receipts.
-2. [ ] **Reliability script:** each demo turn 5–10 times on Haiku, wrong answers counted per turn and prompt version.
+2. [x] **Reliability script** (`scripts/reliability.py`).
 3. [ ] **PayPal side of the demo:** top-up with PayPal Checkout, the ledger, and a demo "fast-forward" for the hold.
 4. [ ] Receipt reader.
 5. [ ] Deploy to Render; demo video, Devpost write-up, README.
