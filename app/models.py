@@ -134,6 +134,19 @@ class Claim(SQLModel, table=True):
         return json.loads(self.reasons_json)
 
 
+class ReceiptRead(SQLModel, table=True):
+    """What the receipt reader saw (app/ai/receipts.py), before the claim exists: kept by the file's hash, so when the
+    receipt is handed in, code compares it with what the member entered (app/core/receipts.py)."""
+    id: int | None = Field(default=None, primary_key=True)
+    group_id: int = Field(foreign_key="group.id", index=True)
+    member_id: int = Field(foreign_key="member.id")
+    request_id: int = Field(foreign_key="request.id")
+    receipt_hash: str = Field(index=True)
+    reading_json: str
+    prompt_id: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class Payout(SQLModel, table=True):
     """A PayPal payout for a claim. `sender_batch_id` comes from the claim ("claim-12-1"), so a retry can never pay
     twice: PayPal refuses a repeated id. A new attempt (after an unclaimed payout is cancelled) gets a new id."""

@@ -32,7 +32,7 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - React + HeroUI: the "View as" switcher (`?as=sam`), an Items page and a Settings page (read-only for all but the
   treasurer).
 
-**Tests:** 231, all passing.
+**Tests:** 248, all passing.
 
 ## Done since: prompts v4 and v5 (2026-10-15)
 
@@ -142,6 +142,22 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - **Coordinator v12.** 10 runs: **90/90**; "where gloves" 10/10, now 1 model call and 2.0 s (was 4 calls, ~7 s): the
   answer is in `<people>`, no lookup. v12 and the clock changed together, so which one fixed it isn't separated.
 
+## Done since: the receipt reader (2026-10-22)
+
+- **One model call, not an agent** (`app/ai/receipts.py`, prompt **receipt v1**): the receipt photo or PDF in, fixed
+  fields out (`app/core/receipts.py` `Reading`: store, date, currency, total, lines, whether a line is the item,
+  what it was unsure of). Photos are turned upright and sent as a JPEG of at most 1600 px (HEIC converted; Pillow and
+  pillow-heif added); uploads up to 25 MB (a phone photo was 11.5 MB).
+- **Claim page:** picking the receipt reads it (`POST /api/claims/read`) and fills in the store, date and total (the
+  total only in the group's currency), shows what it read, and warns what a PIC will look at.
+- **When it's handed in**, code compares the reading (kept by the file's hash, `receipt_read` **new table**) with what
+  the member entered: a different total or date, another currency, nothing like the item, or unreadable → a PIC, with
+  both values. Nothing is refused because of a reading. The reading is kept on the claim.
+- Tried on a Swiss restaurant receipt (CHF 54.50, 2007, a euro conversion): read right in 6–12 s; handed in for trash
+  bags, it reached Dana with three reasons. `scripts/try_receipt.py` reads any receipt from the command line.
+- To do: the reader comments on the date order even when it's clear ("unambiguous… but…"): receipt v2. PDF and HEIC
+  untested with the real model.
+
 ## Found in the Haiku demo runs (to fix)
 
 - [x] The AI can't see answers to questions (now in the `purchase` record).
@@ -166,7 +182,7 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
        member's reason, approve with the cap or say no with a note), extras paid over a limit, and flagged receipts.
 2. [x] **Reliability script** (`scripts/reliability.py`).
 3. [ ] **PayPal side of the demo:** top-up with PayPal Checkout, the ledger, and a demo "fast-forward" for the hold.
-4. [ ] Receipt reader.
+4. [x] Receipt reader (done before 3, 2026-10-22).
 5. [ ] Deploy to Render; demo video, Devpost write-up, README.
 
 - [ ] Admin: a members page.

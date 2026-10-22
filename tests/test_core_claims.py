@@ -100,9 +100,9 @@ def test_only_your_own_confirmed_request_can_be_claimed(session, ready):
 
 @pytest.mark.parametrize("upload, error", [
     (Upload(b"hello, I am a text file", "receipt.jpg"), "isn't a photo or a PDF"),
-    (Upload(b"\xff\xd8\xff" + b"0" * (10 * 1024 * 1024), "huge.jpg"), "over 10 MB"),
+    (Upload(b"\xff\xd8\xff" + b"0" * (25 * 1024 * 1024), "huge.jpg"), "over 25 MB"),
 ])
-def test_only_photos_and_pdfs_up_to_10_mb(session, ready, upload, error):
+def test_only_photos_and_pdfs_up_to_25_mb(session, ready, upload, error):
     with pytest.raises(ActionError, match=error):
         claim(session, "Priya", ready, receipt=upload)
 
@@ -140,6 +140,8 @@ def test_same_store_date_and_total_goes_to_a_pic(session, ready):
 @pytest.mark.parametrize("day, reason", [
     (TODAY - timedelta(days=2), "The receipt is dated Thu 15 Oct, before it was confirmed (Sat 17 Oct)."),
     (TODAY + timedelta(days=1), "The receipt is dated Sun 18 Oct, which hasn't happened yet."),
+    (TODAY.replace(year=2007, month=7, day=30),  # another year says which
+     "The receipt is dated Mon 30 Jul 2007, before it was confirmed (Sat 17 Oct)."),
 ])
 def test_a_receipt_dated_wrong_goes_to_a_pic(session, ready, day, reason):
     assert claim(session, "Priya", ready, day=day).reasons == [reason]

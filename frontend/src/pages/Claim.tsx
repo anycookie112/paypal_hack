@@ -1,7 +1,7 @@
 import { Alert, Button, Card } from '@heroui/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ApiError, api, money, toCents, when } from '../api'
-import type { Claimable, Submitted } from '../api'
+import type { Claimable, ReadResult, Submitted } from '../api'
 import { AreaField, Choice, ErrorAlert, Field, Loading, PageTitle } from '../components/ui'
 
 /** Hand in the receipt for something you got for the group. Code checks it; anything unusual goes to a PIC. */
@@ -41,6 +41,31 @@ function ClaimForm({ claimable, onDone }: { claimable: Claimable[]; onDone: (s: 
   const chosen = claimable.find((c) => String(c.request_id) === requestId) ?? claimable[0]
   const totalCents = toCents(total)
   const over = totalCents !== null && totalCents > chosen.cap_cents
+  const [read, setRead] = useState<ReadState>({ status: 'idle' })
+  const lastRead = useRef(0)
+
+  /** Read the receipt (again, when it's for another request), and fill in the form from what it says. */
+  const startReading = (file: File | null, forRequest: number) => {
+    const n = ++lastRead.current
+    if (!file) { setRead({ status: 'idle' }); return }
+    setRead({ status: 'reading' })
+    const form = new FormData()
+    form.append('request_id', String(forRequest))
+    form.append('receipt', file)
+    api.readReceipt(form)
+      .then((result) => {
+        if (n !== lastRead.current) return  // a newer read started
+        const reading = result.reading
+        if (reading?.readable) {
+          if (reading.store) setStore(reading.store)
+          if (reading.date) setDay(reading.date)
+          // a total in another currency isn't dollars: the member types what they paid in the group's currency
+          if (reading.total && (!reading.currency || reading.currency === result.currency)) setTotal(reading.total)
+        }
+        setRead({ status: 'done', result })
+      })
+      .catch((e: Error) => n === lastRead.current && setRead({ status: 'done', result: { reading: null, note: e.message, currency: '' } }))
+  }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -68,7 +93,8 @@ function ClaimForm({ claimable, onDone }: { claimable: Claimable[]; onDone: (s: 
       <Card.Content>
         <form onSubmit={submit} className="flex flex-col gap-5">
           {claimable.length > 1
-            ? <Choice label="What's it for?" value={String(chosen.request_id)} onChange={setRequestId}
+            ? <Choice label="What's it for?" value={String(chosen.request_id)}
+                      onChange={(id) => { setRequestId(id); if (receipt) startReading(receipt, Number(id)) }}
                       options={claimable.map((c) => ({ id: String(c.request_id), label: label(c) }))} />
             : <p><span className="text-muted">For: </span><b>{label(chosen)}</b></p>}
           {chosen.status === 'expired' && (
@@ -80,7 +106,9 @@ function ClaimForm({ claimable, onDone }: { claimable: Claimable[]; onDone: (s: 
             </Alert>
           )}
 
-          <FilePick label="Receipt" hint="A photo or a PDF of the receipt." file={receipt} onChange={setReceipt} />
+          <FilePick label="Receipt" hint="A photo or a PDF of the receipt: the store, date and total are filled in from it."
+                    file={receipt} onChange={(file) => { setReceipt(file); startReading(file, chosen.request_id) }} />
+          <ReadSummary read={read} item={chosen.item} />
           {chosen.needs_photo && (
             <FilePick label="Where you put it" hint={`A photo of the ${chosen.item.toLowerCase()} where they're kept, so others can find them.`}
                       file={photo} onChange={setPhoto} />
@@ -137,6 +165,51 @@ function Result({ submitted, onAnother }: { submitted: Submitted; onAnother: () 
         <div><Button variant="secondary" onPress={onAnother}>Hand in another</Button></div>
       </Card.Content>
     </Card>
+  )
+}
+
+type ReadState = { status: 'idle' } | { status: 'reading' } | { status: 'done'; result: ReadResult }
+
+/** What the reader saw, and what a PIC will be asked to look at because of it. */
+function ReadSummary({ read, item }: { read: ReadState; item: string }) {
+  if (read.status === 'idle') return null
+  if (read.status === 'reading') return <p className="text-sm text-muted">Reading the receipt…</p>
+  const { reading, note, currency } = read.result
+  if (!reading) return <p className="text-sm text-muted">{note}</p>
+  if (!reading.readable) {
+    return <Note status="warning" title="Couldn't read this receipt">Fill in the store, date and total: a PIC will check them against the receipt.</Note>
+  }
+  const otherCurrency = reading.currency && reading.currency !== currency
+  return (
+    <div className="flex flex-col gap-2">
+      <Note status="success" title="Read from the receipt">
+        {[reading.store, reading.date_as_printed ?? reading.date, reading.total && `${reading.currency ?? ''} ${reading.total}`.trim()]
+          .filter(Boolean).join(' · ')}. Check the values below; change them if they're wrong.
+      </Note>
+      {otherCurrency && <Note status="warning">It's in {reading.currency}: the group pays back in {currency}, so enter what you paid in {currency}. A PIC will look at it.</Note>}
+      {reading.has_the_item === 'no' && <Note status="warning">Nothing on it looks like {item.toLowerCase()}, so a PIC will look at it.</Note>}
+      {(reading.lines.length > 0 || reading.unsure.length > 0) && (
+        <details className="text-sm text-muted">
+          <summary className="cursor-pointer">What it read ({reading.lines.length} lines)</summary>
+          <ul className="mt-1 list-disc pl-5">
+            {reading.lines.map((line, i) => <li key={i}>{line.text}</li>)}
+            {reading.unsure.map((u, i) => <li key={`u${i}`} className="italic">Unsure: {u}</li>)}
+          </ul>
+        </details>
+      )}
+    </div>
+  )
+}
+
+function Note({ status, title, children }: { status: 'success' | 'warning'; title?: string; children: React.ReactNode }) {
+  return (
+    <Alert status={status}>
+      <Alert.Indicator />
+      <Alert.Content>
+        {title && <Alert.Title>{title}</Alert.Title>}
+        <Alert.Description>{children}</Alert.Description>
+      </Alert.Content>
+    </Alert>
   )
 }
 

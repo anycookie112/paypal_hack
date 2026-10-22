@@ -13,8 +13,10 @@ Checks, in order (alerts aren't accusations: anything unusual goes to a PIC, not
     budget     total up to the item's limit; over it, the limit part goes ahead and the extra waits for a PIC
                with the member's reason (never above the group's limit for one purchase)
     payable    they have a PayPal email; the photo is there if the item asks for one             → missing
+    read       if the receipt reader ran on this file (app/core/receipts.py): a different total, date or currency,
+               or nothing on it like the item                                                     → a PIC looks
 
-Until the receipt reader exists, the member types the store, date and total.
+The receipt reader fills in the store, date and total; the member checks them and can change them.
 """
 
 import hashlib
@@ -26,7 +28,7 @@ from typing import Literal
 from sqlmodel import Session, select
 
 from app.config import UPLOADS_DIR
-from app.core import settings
+from app.core import receipts, settings
 from app.core.decisions import ACCEPTED_CLAIMS, expire_stale
 from app.core.payouts import start_hold
 from app.core.requests import ActionError, NeedsInfo, approvers, notify, thing
@@ -34,7 +36,7 @@ from app.core.states import move
 from app.domain.money import cents_to_str
 from app.models import Claim, FeedPost, Group, Item, Member, Request, utcnow
 
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # a phone photo can be 11 MB
 
 
 @dataclass
@@ -111,7 +113,7 @@ def submit_claim(session: Session, by: Member, request_id: int, *, receipt: Uplo
         raise NeedsInfo(missing)
     if total_cents < 0:
         raise ActionError("The total can't be negative.")
-    receipt_kind, photo_kind = _kind(receipt), _kind(photo) if photo else None
+    receipt_kind, photo_kind = file_kind(receipt), file_kind(photo) if photo else None
     receipt_hash = hashlib.sha256(receipt.data).hexdigest()
     if same := session.exec(select(Claim).where(Claim.receipt_hash == receipt_hash,
                                                 Claim.status != "rejected")).first():
@@ -134,10 +136,11 @@ def submit_claim(session: Session, by: Member, request_id: int, *, receipt: Uplo
             reasons.append(f"{session.get(Member, other.member_id).name} has handed in a receipt for "
                            f"{thing(session, request)} since then.")
     confirmed = (request.decided_at or request.created_at).date()
+    dated = f"{receipt_date:%a %d %b}" + (f" {receipt_date.year}" if receipt_date.year != now.year else "")
     if receipt_date < confirmed:
-        reasons.append(f"The receipt is dated {receipt_date:%a %d %b}, before it was confirmed ({confirmed:%a %d %b}).")
+        reasons.append(f"The receipt is dated {dated}, before it was confirmed ({confirmed:%a %d %b}).")
     elif receipt_date > now.date():
-        reasons.append(f"The receipt is dated {receipt_date:%a %d %b}, which hasn't happened yet.")
+        reasons.append(f"The receipt is dated {dated}, which hasn't happened yet.")
     if same := session.exec(select(Claim).where(Claim.group_id == group.id, Claim.store == store.strip(),
                                                 Claim.receipt_date == receipt_date,
                                                 Claim.total_cents == total_cents,
@@ -147,12 +150,17 @@ def submit_claim(session: Session, by: Member, request_id: int, *, receipt: Uplo
     if total_cents > ceiling:
         reasons.append(f"The total is over the group's {cents_to_str(ceiling)} limit for one purchase: at most that "
                        "is paid back.")
+    reading = receipts.reading_for(session, group.id, receipt_hash)
+    if reading:
+        reasons += receipts.differences(reading, member=by.name, what=thing(session, request),
+                                        receipt_date=receipt_date, total_cents=total_cents, currency=group.currency)
 
     claim = Claim(group_id=group.id, request_id=request.id, member_id=by.id, item_id=request.item_id,
                   receipt_path=_save(receipt, receipt_hash, receipt_kind),
                   receipt_hash=receipt_hash, store=store.strip(), receipt_date=receipt_date, total_cents=total_cents,
                   base_cents=base, extra_cents=extra, extra_reason=extra_reason.strip() if extra else "",
                   extra_status="pending" if extra else "none", reasons_json=json.dumps(reasons), submitted_at=now,
+                  reading_json=reading.model_dump_json() if reading else "{}",
                   status="")
     if photo:
         claim.photo_path = _save(photo, hashlib.sha256(photo.data).hexdigest(), photo_kind)
@@ -232,10 +240,10 @@ def _in_review(session: Session, claim_id: int, by: Member) -> Claim:
 _KINDS = [(b"\xff\xd8\xff", ".jpg"), (b"\x89PNG\r\n\x1a\n", ".png"), (b"%PDF", ".pdf")]
 
 
-def _kind(upload: Upload) -> str:
-    """The file's real type from its first bytes (not its name): a photo or a PDF, up to 10 MB."""
+def file_kind(upload: Upload) -> str:
+    """The file's real type from its first bytes (not its name): a photo or a PDF, up to 25 MB."""
     if len(upload.data) > MAX_UPLOAD_BYTES:
-        raise ActionError(f"\"{upload.filename or 'That file'}\" is over 10 MB: send a smaller photo.")
+        raise ActionError(f"\"{upload.filename or 'That file'}\" is over 25 MB: send a smaller photo.")
     head = upload.data[:16]
     for magic, extension in _KINDS:
         if head.startswith(magic):

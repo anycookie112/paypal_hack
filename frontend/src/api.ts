@@ -88,6 +88,25 @@ export interface Claimable {
   needs_photo: boolean;    // the item asks for a photo of where it's kept
 }
 
+/** What the receipt reader saw on a receipt: it fills in the claim form; a PIC sees any difference. */
+export interface Reading {
+  readable: boolean;
+  store: string | null;
+  date: string | null;     // YYYY-MM-DD
+  date_as_printed: string | null;
+  currency: string | null;
+  total: string | null;    // as printed, without the currency
+  lines: { text: string; quantity: number | null; amount: string | null }[];
+  has_the_item: "yes" | "no" | "unsure";
+  unsure: string[];
+}
+
+export interface ReadResult {
+  reading: Reading | null; // null: it couldn't be read just now
+  note: string;
+  currency: string;        // the group's
+}
+
 export interface ClaimInfo {
   id: number;
   item: string;
@@ -298,6 +317,7 @@ export const api = {
   updateItem: (id: number, body: ItemChange) => request<Catalog>("PATCH", `/items/${id}`, body),
 
   claimable: () => request<Claimable[]>("GET", "/claimable"),
+  readReceipt: (form: FormData) => request<ReadResult>("POST", "/claims/read", form),
   submitClaim: (form: FormData) => request<Submitted>("POST", "/claims", form),
   claimsForReview: () => request<ClaimInfo[]>("GET", "/claims/review"),
   acceptClaim: (id: number) => request<ClaimInfo>("POST", `/claims/${id}/accept`),

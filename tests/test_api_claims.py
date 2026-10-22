@@ -78,3 +78,48 @@ def test_a_pic_decides_on_a_flagged_receipt(client, people):
     assert client.post(f"/api/claims/{waiting['id']}/accept", headers=people["Marco"]).status_code == 400
     accepted = client.post(f"/api/claims/{waiting['id']}/accept", headers=people["Dana"]).json()
     assert accepted["status"] == "waiting"
+
+
+def fake_reader(monkeypatch, total="11.99", fails=False):
+    """The receipt reader without a model: it 'reads' this total off any receipt, and remembers what it was asked."""
+    from app.ai.model import AgentError
+    from app.core.receipts import Reading
+    asked = []
+
+    async def read(data, kind, *, what):
+        asked.append((kind, what))
+        if fails:
+            raise AgentError("receipt: couldn't read it (TimeoutError)")
+        today = datetime.now(timezone.utc).date().isoformat()
+        return Reading(readable=True, store="Riverside Hardware", date=today, date_as_printed=None, currency="USD",
+                       total=total, lines=[], has_the_item="yes", unsure=[]), {"prompt_id": "receipt@v1", "ms": 5,
+                                                                              "input_tokens": 1, "output_tokens": 1}
+    monkeypatch.setattr("app.api.claims.read_receipt", read)
+    return asked
+
+
+def read(client, headers, request_id, receipt=JPG):
+    return client.post("/api/claims/read", data={"request_id": str(request_id)},
+                       files={"receipt": ("receipt.jpg", receipt, "image/jpeg")}, headers=headers)
+
+
+def test_the_reader_fills_in_the_form_and_a_different_total_goes_to_a_pic(client, people, monkeypatch):
+    asked = fake_reader(monkeypatch, total="9.99")
+    request_id = get(client, "Priya", "Trash bags")
+    body = read(client, people["Priya"], request_id).json()
+    assert (body["reading"]["store"], body["reading"]["total"], body["currency"]) == ("Riverside Hardware", "9.99",
+                                                                                      "USD")
+    assert asked == [(".jpg", "Trash bags")]
+    assert read(client, people["Marco"], request_id).status_code == 400  # not his request
+
+    handed = hand_in(client, people["Priya"], request_id, total="11.99").json()  # she typed another total
+    assert (handed["outcome"], handed["claim"]["reasons"]) == (
+        "review", ["The receipt reader read a total of $9.99; Priya entered $11.99."])
+
+
+def test_without_a_reading_the_member_types_the_values(client, people, monkeypatch):
+    fake_reader(monkeypatch, fails=True)
+    request_id = get(client, "Priya", "Trash bags")
+    assert read(client, people["Priya"], request_id).json() == {
+        "reading": None, "note": "Couldn't read it just now: fill in the store, date and total.", "currency": "USD"}
+    assert hand_in(client, people["Priya"], request_id).json()["outcome"] == "accepted"  # checked as before
