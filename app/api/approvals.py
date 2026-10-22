@@ -10,7 +10,7 @@ from sqlmodel import select
 from app.api.deps import MemberDep, SessionDep
 from app.core import payouts
 from app.core.requests import ActionError, approve_request, reject_request, thing
-from app.domain.money import to_cents
+from app.domain.money import range_to_str, to_cents
 from app.models import Claim, Member, Request
 
 router = APIRouter()
@@ -22,6 +22,7 @@ class WaitingRequest(BaseModel):
     item: str
     quantity: int
     estimate_cents: int | None
+    price: str | None        # the member's price range in words ("$30.00–$50.00")
     cap_cents: int           # what the rules suggest paying back up to; the PIC can change it
     reason: str              # the member's own words
     reasons: list[str]       # why the rules sent it to a PIC
@@ -93,7 +94,10 @@ def reject_extra(claim_id: int, body: RejectIn, session: SessionDep, member: Mem
 def _request(session, request: Request) -> WaitingRequest:
     return WaitingRequest(id=request.id, member=session.get(Member, request.member_id).name,
                           item=thing(session, request), quantity=request.quantity,
-                          estimate_cents=request.estimate_cents, cap_cents=request.cap_cents, reason=request.reason,
+                          estimate_cents=request.estimate_cents,
+                          price=range_to_str(request.estimate_low_cents, request.estimate_cents)
+                          if request.estimate_cents else None,
+                          cap_cents=request.cap_cents, reason=request.reason,
                           reasons=request.reasons, hours=request.hours, created_at=request.created_at)
 
 

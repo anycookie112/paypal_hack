@@ -11,7 +11,8 @@ const LINES: Record<string, string[]> = {
   Priya: ["We're out of gloves for Saturday's cleanup, I'll grab some", 'by 11'],
   Marco: ["I'll pick up gloves on my way in", 'Can I get a folding table for the market stall? About $40',
           'We need it to show the flyers at the Saturday market', 'Did Priya say where the gloves are?'],
-  Dana: ['How much is left in the supplies budget this month?'],
+  Dana: ['How much is left in the supplies budget this month?', 'I need a ladder to hang the banner at the market',
+         'Probably 30 to 50'],
   Sam: ['Who are the PICs?'],
 }
 const stamp = () => new Date().toISOString()

@@ -179,7 +179,7 @@ def test_getting_an_item_by_the_members_deadline(session, group):
     assert json.loads(results[0].content) == {
         "type": "item_requested", "outcome": "confirmed", "request_id": 1, "item": "Gloves",
         "paid_back_up_to": "$25.00", "until": "Sat 17 Oct, 11:00 UTC", "usual_time": False,  # exactly what she said
-        "reasons": [], "reason_given": None, "already_getting_it": []}
+        "reasons": [], "price": None, "reason_given": None, "already_getting_it": []}
     assert result.status == "done" and result.actions[0].model_dump() == json.loads(results[0].content)
     request = session.exec(select(Request)).one()
     assert (request.member_id, request.status, request.on_it_until) == (
@@ -230,16 +230,29 @@ def test_someone_already_getting_it(session, group):
 
 
 def test_rules_saying_no_come_back_to_the_agent(session, group):
-    model, results = scripted(call("get_item", {"description": "Folding table", "estimate": "40"}),
-                              call("get_item", {"description": "Folding table", "estimate": "40",
+    """Something not on the list needs a price range and a reason before a PIC sees it: both asked for at once."""
+    model, results = scripted(call("get_item", {"description": "Folding table"}),
+                              call("get_item", {"description": "Folding table", "price_said": "30 to 50",
                                                 "reason": "For the stall"}), done())
     ask(ActionAgent(model=model), session, "Priya",
-        conversation=said(session, "Priya", "Can I get a folding table, about $40?", "For the stall"))
-    assert results[0].status == "error" and "Missing: why it's needed." in results[0].content
+        conversation=said(session, "Priya", "Can I get a folding table?", "30 to 50", "For the stall"))
+    assert results[0].status == "error" and "Missing: a price range; why it's needed." in results[0].content
     got = json.loads(results[1].content)
-    assert (got["outcome"], got["request_id"], got["reason_given"]) == ("needs_approval", 1, "For the stall")
+    assert (got["outcome"], got["request_id"], got["price"], got["reason_given"]) == (
+        "needs_approval", 1, "$30.00–$50.00", "For the stall")
     assert got["reasons"][0].startswith("Not on the group's list")
-    assert session.exec(select(Request)).one().status == "needs_approval"
+    request = session.exec(select(Request)).one()
+    assert (request.status, request.estimate_low_cents, request.estimate_cents) == ("needs_approval", 30_00, 50_00)
+
+
+def test_a_price_the_member_never_said_is_refused(session, group):
+    model, results = scripted(call("get_item", {"description": "Folding table", "price_said": "about $40",
+                                                "reason": "For the stall"}),
+                              call("ActResult", {"status": "needs_info", "missing": ["a price range"]}))
+    ask(ActionAgent(model=model), session, "Priya",
+        conversation=said(session, "Priya", "Can I get a folding table?", "For the stall"))
+    assert results[0].status == "error" and "isn't something the member wrote" in results[0].content
+    assert session.exec(select(Request)).all() == []
 
 
 def test_actions_are_only_ever_the_members_own(session, group):
@@ -363,12 +376,25 @@ def test_a_reason_must_be_the_members_own_words(session, group):
     """The demo run had act write its own reason ("not on the item list, so it needs a reason and approval")."""
     chat = said(session, "Marco", "Can I get a folding table for the market stall? About $40")
     model, results = scripted(
-        call("get_item", {"description": "Folding table", "estimate": "40",
+        call("get_item", {"description": "Folding table", "price_said": "About $40",
                           "reason": "Needed for the stall; not on the list, so it needs approval"}),
-        call("get_item", {"description": "Folding table", "estimate": "40", "reason": "for the market stall"}), done())
+        call("get_item", {"description": "Folding table", "price_said": "About $40",
+                          "reason": "for the market stall"}), done())
     ask(ActionAgent(model=model), session, "Marco", conversation=chat)
     assert results[0].status == "error" and "isn't something the member wrote" in results[0].content
     assert session.exec(select(Request)).one().reason == "for the market stall"
+
+
+def test_act_sees_the_members_last_messages_word_for_word(session, group):
+    """The coordinator's brief retold "We need it…" as "they need it…", and act's quote check refused it."""
+    chat = said(session, "Marco", "hi", "Can I get a folding table?", "About $40", "We need it to show the flyers")
+    seen = []
+    model = FakeChatModel(respond=lambda messages, tools: seen.append(messages[0].content) or call(
+        "ActResult", {"status": "cant_do"}))
+    ask(ActionAgent(model=model), session, "Marco", "Marco says they need it to show the flyers", conversation=chat)
+    assert seen[0].endswith('<member_said>\nMarco\'s last messages, oldest first, word for word:\n'
+                            'Marco: "Can I get a folding table?"\nMarco: "About $40"\n'
+                            'Marco: "We need it to show the flyers"\n</member_said>\n</chat_context>')
 
 
 def test_adding_a_reason_instead_of_asking_twice(session, group):
@@ -377,7 +403,7 @@ def test_adding_a_reason_instead_of_asking_twice(session, group):
                  reason="for the market stall").request
     chat = said(session, "Marco", "We need it to show the flyers at the Saturday market")
     model, results = scripted(
-        call("get_item", {"description": "Folding table", "estimate": "40",
+        call("get_item", {"description": "Folding table",
                           "reason": "We need it to show the flyers at the Saturday market"}),
         call("add_reason", {"request_id": table.id,
                             "reason": "We need it to show the flyers at the Saturday market"}), done())

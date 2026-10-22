@@ -100,22 +100,28 @@ def _ago(then: datetime, now: datetime) -> str:
 
 
 def decide(session: Session, group: Group, member: Member, *, item: Item | None, estimate_cents: int | None = None,
-           insist: bool = False, now: datetime | None = None) -> Decision:
+           estimate_low_cents: int | None = None, insist: bool = False, now: datetime | None = None) -> Decision:
     """Decide on "I'm getting `item`" (or something not on the list, when `item` is None).
 
-    `insist=True` means the member wants it even though someone is already on it: an approver decides.
+    `estimate_cents` is the most the member said it might cost, `estimate_low_cents` the least (None: the same): the
+    rules count the most. `insist=True` means the member wants it even though someone is already on it: an approver
+    decides.
     """
     now = now or utcnow()
     expire_stale(session, group.id, now)
     config = settings.get_all(session, group)
     ceiling = config["hard_ceiling_cents"]
     amount = item.cap_cents if item else estimate_cents
+    low = estimate_low_cents if estimate_low_cents is not None else estimate_cents
 
-    if estimate_cents is not None and estimate_cents > ceiling:
+    if low is not None and low > ceiling:
         return Decision("declined", [f"Over the {cents_to_str(ceiling)} limit for one purchase: "
                                      "this needs the group's normal process."])
 
     reasons = []
+    if estimate_cents is not None and estimate_cents > ceiling:  # only the top of the range is over
+        reasons.append(f"It could cost up to {cents_to_str(estimate_cents)}, over the {cents_to_str(ceiling)} limit "
+                       f"for one purchase: no more than {cents_to_str(ceiling)} can be paid back.")
     if item is not None:
         getting = on_it(session, item, now)
         if getting and not insist:
@@ -133,8 +139,6 @@ def decide(session: Session, group: Group, member: Member, *, item: Item | None,
                            f"it usually lasts {item.restock_days} days.")
     else:
         reasons.append("Not on the group's list of common items.")
-        if amount is None:
-            reasons.append("No price estimate yet.")
 
     if amount is not None:
         limit = config["member_monthly_limit_cents"]
@@ -148,6 +152,6 @@ def decide(session: Session, group: Group, member: Member, *, item: Item | None,
             reasons.append(f"Over the group's monthly budget ({cents_to_str(group.monthly_budget_cents)}).")
 
     if reasons:
-        return Decision("needs_approval", reasons, cap_cents=amount or 0)
+        return Decision("needs_approval", reasons, cap_cents=min(amount or 0, ceiling))
     return Decision("confirmed", [f"{item.name} is pre-approved up to {cents_to_str(item.cap_cents)}."],
                     cap_cents=item.cap_cents)

@@ -121,6 +121,19 @@ def member_said(chat: Chat) -> str:
     return "\n".join(" ".join(text.lower().split()) for text in said)
 
 
+def last_said(chat: Chat, limit: int = 3) -> str:
+    """The <member_said> block: the member's last messages, word for word, to copy reasons and times from. The
+    coordinator's brief retells them ("they need it to show the flyers"), and a retold reason fails the quote check."""
+    if chat.conversation is None:
+        return ""
+    said = [m.text for m in memory.recent_messages(chat.session, chat.conversation) if m.role == "user"][-limit:]
+    if not said:
+        return ""
+    name = chat.member.name
+    return "\n".join(["<member_said>", f"{name}'s last messages, oldest first, word for word:",
+                      *(f"{name}: \"{text}\"" for text in said), "</member_said>"])
+
+
 def ago(then: datetime, now: datetime) -> str:
     minutes = int((now - then).total_seconds() // 60)
     if minutes < 2:

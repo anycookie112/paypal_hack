@@ -32,8 +32,8 @@ def test_a_pic_sees_what_waits_for_them(client, people):
     request_id = table()
     assert client.get("/api/approvals", headers=people["Priya"]).json() == {"requests": [], "extras": []}
     [waiting] = client.get("/api/approvals", headers=people["Dana"]).json()["requests"]
-    assert (waiting["id"], waiting["member"], waiting["item"], waiting["estimate_cents"], waiting["cap_cents"],
-            waiting["reason"]) == (request_id, "Marco", "Folding table", 40_00, 40_00,
+    assert (waiting["id"], waiting["member"], waiting["item"], waiting["price"], waiting["cap_cents"],
+            waiting["reason"]) == (request_id, "Marco", "Folding table", "about $40.00", 40_00,
                                    "To show the flyers at the market")
     assert waiting["reasons"] == ["Not on the group's list of common items."]
 

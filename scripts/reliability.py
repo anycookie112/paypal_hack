@@ -100,7 +100,34 @@ def one_table_with_the_reason(run: Run, reply: str, started: datetime) -> str | 
         return f"{len(tables)} table requests, not 1"
     if tables[0].status != "needs_approval":
         return f"the table is {tables[0].status}, not waiting for a PIC"
+    if (tables[0].estimate_low_cents, tables[0].estimate_cents) != (40_00, 40_00):
+        return f"the price is {tables[0].estimate_low_cents}–{tables[0].estimate_cents} cents, not about $40"
     return None if "flyers" in tables[0].reason.lower() else f"the reason is {tables[0].reason!r}: no flyers"
+
+
+def ladders(run: Run) -> list[Request]:
+    return [r for r in open_requests(run, "Dana") if r.item_id is None]
+
+
+ASKS_PRICE = re.compile(r"\b(cost|price|how much|spend)\b", re.I)
+
+
+def asks_the_ladders_price(run: Run, reply: str, started: datetime) -> str | None:
+    if ladders(run):
+        return "a ladder request went to the PICs without a price"
+    return None if ASKS_PRICE.search(reply) else "the reply doesn't ask what it will cost"
+
+
+def ladder_waits_with_the_range(run: Run, reply: str, started: datetime) -> str | None:
+    found = ladders(run)
+    if len(found) != 1:
+        return f"{len(found)} ladder requests, not 1"
+    ladder = found[0]
+    if ladder.status != "needs_approval":
+        return f"the ladder is {ladder.status}, not waiting for a PIC"
+    if (ladder.estimate_low_cents, ladder.estimate_cents) != (30_00, 50_00):
+        return f"the price is {ladder.estimate_low_cents}–{ladder.estimate_cents} cents, not $30–$50"
+    return None if "banner" in ladder.reason.lower() else f"the reason is {ladder.reason!r}: no banner"
 
 
 # "My earlier message was out of date" is true, so it passes; calling it wrong or a mistake doesn't.
@@ -144,6 +171,8 @@ TURNS: list[tuple[str, str, str, Check]] = [
     ("table reason", "Marco", "We need it to show the flyers at the Saturday market", one_table_with_the_reason),
     ("where gloves", "Marco", "Did Priya say where the gloves are?", says_where_and_no_false_correction),
     ("budget", "Dana", "How much is left in the supplies budget this month?", exact_budget_no_hedge),
+    ("ladder", "Dana", "I need a ladder to hang the banner at the market", asks_the_ladders_price),
+    ("ladder price", "Dana", "Probably 30 to 50", ladder_waits_with_the_range),
 ]
 OUTSIDE_AFTER = "table reason"  # the receipt, the question and the answer happen after this turn
 

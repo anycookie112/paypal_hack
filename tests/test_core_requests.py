@@ -194,6 +194,33 @@ def test_anything_a_pic_must_approve_needs_a_reason(session, group):
     assert tell(session, "Priya", "Gloves", reason="").decision.outcome == "confirmed"  # confirmed needs none
 
 
+def test_something_not_on_the_list_needs_a_price_range_and_a_reason(session, group):
+    """Everything missing comes back at once, so a PIC never sees a request without them."""
+    with pytest.raises(NeedsInfo, match="Missing: a price range; why it's needed. A PIC has to approve it") as missing:
+        tell(session, "Priya", description="Folding table", reason="")
+    assert missing.value.missing == ["a price range", "why it's needed"]
+    with pytest.raises(NeedsInfo) as missing:
+        tell(session, "Priya", description="Folding table")  # with a reason
+    assert missing.value.missing == ["a price range"]
+    assert session.exec(select(Request)).all() == []
+
+
+def test_a_price_range_counts_its_top_end(session, group):
+    table = tell(session, "Priya", description="Folding table", estimate_low_cents=30_00, estimate_cents=50_00).request
+    assert (table.status, table.estimate_low_cents, table.cap_cents) == ("needs_approval", 30_00, 50_00)
+    note = session.exec(select(Notification).where(Notification.kind == "needs_approval")).first()
+    assert note.text.startswith("Priya wants to get Folding table ($30.00–$50.00).")
+
+
+def test_a_range_is_declined_only_if_all_of_it_is_over_the_ceiling(session, group):
+    gazebo = tell(session, "Priya", description="Gazebo", estimate_low_cents=110_00, estimate_cents=150_00)
+    assert gazebo.decision.outcome == "declined"
+    tent = tell(session, "Marco", description="Tent", estimate_low_cents=80_00, estimate_cents=120_00)
+    assert (tent.request.status, tent.request.cap_cents) == ("needs_approval", 100_00)  # a PIC can't go higher
+    assert tent.decision.reasons[0] == ("It could cost up to $120.00, over the $100.00 limit for one purchase: "
+                                        "no more than $100.00 can be paid back.")
+
+
 def test_only_the_person_getting_it_can_release_it(session, group):
     request = tell(session, "Priya", "Gloves").request
     with pytest.raises(ActionError, match="Only Priya can change that request"):

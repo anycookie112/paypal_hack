@@ -17,3 +17,12 @@ def to_cents(value) -> int:
 
 def cents_to_str(cents: int) -> str:
     return f"${cents / 100:,.2f}"
+
+
+def range_to_str(low: int | None, high: int) -> str:
+    """A member's price range in words: 'about $40.00', 'up to $20.00', '$30.00–$50.00'."""
+    if low is None or low == high:
+        return f"about {cents_to_str(high)}"
+    if low == 0:
+        return f"up to {cents_to_str(high)}"
+    return f"{cents_to_str(low)}–{cents_to_str(high)}"

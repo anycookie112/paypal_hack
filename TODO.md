@@ -32,7 +32,7 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - React + HeroUI: the "View as" switcher (`?as=sam`), an Items page and a Settings page (read-only for all but the
   treasurer).
 
-**Tests:** 211, all passing.
+**Tests:** 229, all passing.
 
 ## Done since: prompts v4 and v5 (2026-10-15)
 
@@ -108,6 +108,27 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
   everyone (subagent steps indented, model calls optional, click a step for its data), open requests, receipts and
   the latest moves, and "Reset the demo" (`LAB_RESET=0` turns it off). The demo seed is now `app/core/demo.py`.
 
+## Done since: the member's own words (2026-10-22)
+
+- act gets the member's last 3 messages word for word in `<chat_context>` (`<member_said>`, added by code) and copies
+  reasons and times from there; the coordinator quotes the member word for word instead of retelling them.
+- action v7 / coordinator v9, 10 runs: 70/70; quote refusals 18 → 0; the "table reason" turn 6.6 → 4.0 model calls,
+  9.7 → 5.8 s. But v7's rule quoted the test's own words as its example, and v9 had a template.
+- **action v8 / coordinator v10**: the same rules in general words, no examples. 10 runs: 70/70; "table reason" 4.0
+  calls; 1 quote refusal (an invented `when_said: "now"`, retried once).
+
+## Done since: a price range for anything not on the list (2026-10-22)
+
+- Something not on the list needs a rough price and a reason before a PIC sees it; code lists everything missing at
+  once ("Missing: a price range; why it's needed"). The price is the member's own words (`price_said`, quote-checked),
+  turned into a low–high range by code (`app/core/prices.py`). The rules count the top end; it's declined only if
+  even the low end is over the hard ceiling (otherwise a PIC can approve up to the ceiling). The PICs see the range.
+- Reasons are never judged by the AI: the coordinator asks once more only if an answer says nothing about why.
+- Prompts: **action v9**, **coordinator v11** (general wording, no examples).
+- Reliability: two new turns (Dana's ladder, no price, then "Probably 30 to 50"); the table turn checks "about $40".
+  10 runs: 89/90; both ladder turns 10/10. One "where gloves" reply said "I was wrong earlier" again (v8/v10: 0/10).
+- **New column** (`request.estimate_low_cents`): `uv run python scripts/seed_demo.py --reset` (or the Lab's reset).
+
 ## Found in the Haiku demo runs (to fix)
 
 - [x] The AI can't see answers to questions (now in the `purchase` record).
@@ -117,9 +138,11 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - [ ] Haiku adds "I can't promise they'll approve it" to almost every reply; uses he/she, not names. (Prompt v8.)
 - [ ] A list item that needs no reason still stores the member's whole sentence as its reason.
 - [x] One clean run isn't proof: `scripts/reliability.py` (v8: 70/70).
-- [ ] The coordinator paraphrases the member in its briefs ("they need it to show the flyers"), so act's quote check
-      refuses the reason and act retries: 5 of 10 runs spent 2–4 extra calls on the table turn. Same for an invented
-      `when_said: "now"`. Idea: give act the member's last messages in its `<chat_context>` to copy from.
+- [x] The coordinator retold the member in its briefs ("they need it to show the flyers"), so act's quote check
+      refused the reason and act retried (2–4 extra calls in 5 of 10 runs). Fixed in action v8 / coordinator v10.
+- [ ] lookup copies only the category the member asked about from the `budgets` record (dropping the rest), and the
+      check sends it back: 11 times in the latest 10 runs (budget and ladder turns). Idea: `budgets` takes an
+      optional category, so the tool returns only what was asked and the copy can be exact.
 
 ## Next (in order)
 

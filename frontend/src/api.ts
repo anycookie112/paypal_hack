@@ -113,6 +113,7 @@ export interface WaitingRequest {
   item: string;
   quantity: number;
   estimate_cents: number | null;
+  price: string | null;    // the member's price range in words
   cap_cents: number;       // what the rules suggest paying back up to; the PIC can change it
   reason: string;          // the member's own words
   reasons: string[];       // why the rules sent it to a PIC

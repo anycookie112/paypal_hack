@@ -15,7 +15,7 @@ from sqlmodel import Session, select
 from app.core import settings
 from app.core.decisions import Decision, decide, expire_stale
 from app.core.states import move
-from app.domain.money import cents_to_str
+from app.domain.money import cents_to_str, range_to_str
 from app.models import FeedPost, Group, Item, Member, Notification, Request, utcnow
 
 
@@ -54,10 +54,16 @@ def thing(session: Session, request: Request) -> str:
 
 
 def submit_request(session: Session, member: Member, *, item_id: int | None = None, description: str = "",
-                   quantity: int = 1, estimate_cents: int | None = None, reason: str = "", insist: bool = False,
-                   until: datetime | None = None, now: datetime | None = None) -> Submitted:
+                   quantity: int = 1, estimate_cents: int | None = None, estimate_low_cents: int | None = None,
+                   reason: str = "", insist: bool = False, until: datetime | None = None,
+                   now: datetime | None = None) -> Submitted:
     """`member` tells the group they're getting something. Decided by the rules (app/core/decisions.py).
-    `until` is when they'll have it by ("by 1 pm", app/core/times.py); the group's usual time when they don't say."""
+    `estimate_cents` is the most it might cost and `estimate_low_cents` the least (a range, app/core/prices.py; None:
+    the same). `until` is when they'll have it by ("by 1 pm", app/core/times.py); the group's usual time when they
+    don't say.
+
+    Anything a PIC must approve needs a reason, and something not on the list a price range too: every missing detail
+    comes back at once (NeedsInfo), so the member is asked for each before the PICs see it."""
     now = now or utcnow()
     group = session.get(Group, member.group_id)
     item = None
@@ -78,15 +84,19 @@ def submit_request(session: Session, member: Member, *, item_id: int | None = No
         raise ActionError(f"{member.name} already asked for this: request {earlier.id} ({thing(session, earlier)}, "
                           f"{where}). Add to that request instead, or release it first.")
 
-    decision = decide(session, group, member, item=item, estimate_cents=estimate_cents, insist=insist, now=now)
+    decision = decide(session, group, member, item=item, estimate_cents=estimate_cents,
+                      estimate_low_cents=estimate_low_cents, insist=insist, now=now)
     if decision.outcome == "already_on_it":
         return Submitted(decision, None)
-    if decision.outcome == "needs_approval" and not reason.strip():
-        raise NeedsInfo(["why it's needed"], f"A PIC has to approve it: {' '.join(decision.reasons)}")
+    missing = (["a price range"] if item is None and estimate_cents is None else []) +               (["why it's needed"] if decision.outcome == "needs_approval" and not reason.strip() else [])
+    if missing:
+        raise NeedsInfo(missing, f"A PIC has to approve it: {' '.join(decision.reasons)}")
+    low = estimate_low_cents if estimate_low_cents is not None else estimate_cents
 
     status = STATUS_FOR[decision.outcome]
     request = Request(group_id=group.id, member_id=member.id, item_id=item_id, description=description.strip(),
-                      quantity=quantity, estimate_cents=estimate_cents, reason=reason.strip(), status="",
+                      quantity=quantity, estimate_cents=estimate_cents, estimate_low_cents=low,
+                      reason=reason.strip(), status="",
                       reasons_json=json.dumps(decision.reasons), cap_cents=decision.cap_cents, hours=hours,
                       created_at=now)
     if status == "on_it":
@@ -97,7 +107,7 @@ def submit_request(session: Session, member: Member, *, item_id: int | None = No
     if request.status == "on_it":
         _post_on_it(session, request, member)
     elif request.status == "needs_approval":
-        estimate = f" (about {cents_to_str(estimate_cents)})" if estimate_cents else ""
+        estimate = f" ({range_to_str(low, estimate_cents)})" if estimate_cents else ""
         for approver in approvers(session, group, besides=member):
             notify(session, approver, "needs_approval",
                     f"{member.name} wants to get {thing(session, request)}{estimate}. " + " ".join(decision.reasons),

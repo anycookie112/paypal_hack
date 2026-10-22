@@ -84,7 +84,8 @@ class Request(SQLModel, table=True):
     item_id: int | None = Field(default=None, foreign_key="item.id", index=True)  # None = not a common item
     description: str = ""     # what they said they'd get, for uncommon items especially
     quantity: int = 1
-    estimate_cents: int | None = None
+    estimate_cents: int | None = None      # the most the member said it might cost
+    estimate_low_cents: int | None = None  # the least (their range's low end; the same if they gave one amount)
     reason: str = ""
     status: str = Field(index=True)
     reasons_json: str = "[]"  # the decision engine's reasons, written by code

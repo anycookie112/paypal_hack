@@ -99,7 +99,7 @@ function RequestCard({ request, canDecide, onDecided }: {
   const [cap, setCap] = useState(request.cap_cents ? dollars(request.cap_cents) : '')
   const [note, setNote] = useState('')
   const { busy, decide } = useDecision(() => onDecided(request.id))
-  const estimate = request.estimate_cents ? `, about ${money(request.estimate_cents)}` : ''
+  const estimate = request.price ? `, ${request.price}` : ''
 
   return (
     <Card>

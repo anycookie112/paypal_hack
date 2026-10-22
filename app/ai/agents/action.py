@@ -14,13 +14,14 @@ from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from sqlmodel import Session
 
-from app.ai.agents.context import Chat, ChatAgent, Record, member_said, not_returned, returned, when
+from app.ai.agents.context import Chat, ChatAgent, Record, last_said, member_said, not_returned, returned, when
 from app.ai.base import ToolResult
 from app.core import payouts
 from app.core.members import set_paypal_email
 from app.core.requests import ActionError, add_reason, change_time, release_request, submit_request, thing
+from app.core.prices import price_range
 from app.core.times import deadline_from
-from app.domain.money import cents_to_str, to_cents
+from app.domain.money import cents_to_str, range_to_str
 from app.models import Claim, Item, Member
 
 
@@ -43,6 +44,7 @@ class ItemRequested(Record):
     until: str | None            # confirmed: when they have to get it by
     usual_time: bool             # they didn't say when: the group's usual time, which they can change
     reasons: list[str]           # needs_approval or declined: why, in the rules' words
+    price: str | None            # the member's price range, worked out by code from their words
     reason_given: str | None     # the reason passed to get_item
     already_getting_it: list[OnItBy]  # already_on_it: who
 
@@ -95,7 +97,7 @@ Action = ItemRequested | TimeChanged | ReasonAdded | Released | Asked | Answered
 _ACTIONS = TypeAdapter(Action)
 
 # What the coordinator can be told to ask the member: a fixed list, so it asks for exactly that.
-Missing = Literal["what they're getting", "why it's needed", "a clock time", "which item", "which request",
+Missing = Literal["what they're getting", "a price range", "why it's needed", "a clock time", "which item", "which request",
                   "which purchase", "what's wrong", "what they checked", "their yes to a formal report",
                   "their answer", "their PayPal email"]
 
@@ -158,8 +160,13 @@ class ActionAgent(ChatAgent):
                      self.report_problem, self.set_paypal_email):
             self.register_tool(tool)
 
+    def instructions(self, chat: Chat) -> str:
+        """<chat_context>, plus the member's last messages word for word (<member_said>): reasons and times must be
+        their own words, and the brief may retell them (5 of 10 reliability runs had act refused 2–4 times)."""
+        return "\n\n".join(part for part in (super().instructions(chat), last_said(chat)) if part)
+
     def get_item(self, runtime: ToolRuntime[Chat], item_id: int | None = None, description: str = "",
-                 when_said: str = "", estimate: str = "", quantity: int = 1, reason: str = "",
+                 when_said: str = "", price_said: str = "", quantity: int = 1, reason: str = "",
                  insist: bool = False) -> str:
         """Tell the group the member is getting something. The app's rules decide the outcome: confirmed (it's
         theirs, up to the item's cap), needs_approval (sent to a PIC), declined, or already_on_it (someone else is
@@ -171,27 +178,30 @@ class ActionAgent(ChatAgent):
             when_said: The member's own words for when they'll get it, copied exactly from what they wrote
                 ("by 11", "in 2 hours"). The app works out the time. Empty if they didn't say: they get the group's
                 default time and can change it later.
-            estimate: Roughly what it will cost, e.g. "18.50", if they said.
+            price_said: The member's own words for what it will cost, copied exactly from what they wrote; a
+                rough range is fine. The app works out the range. Required for anything not on the list; empty if
+                they didn't say.
             quantity: How many.
             reason: Why it's needed, copied exactly from what the member wrote: required for anything not on the
                 list or over a limit. Empty if they didn't say.
             insist: True only if they still want it after hearing someone else is already getting it.
         """
         chat = runtime.context
-        try:
-            estimate_cents = to_cents(estimate) if estimate.strip() else None
-        except ValueError as exc:
-            raise ActionError(str(exc))
+        low = high = None
+        if price_said.strip():
+            _quoted(chat, price_said, "the price")
+            low, high = price_range(price_said)
         until = _deadline(chat, when_said) if when_said.strip() else None
         _quoted(chat, reason, "reason")
         result = submit_request(chat.session, chat.member, item_id=item_id, description=description,
-                                quantity=quantity, estimate_cents=estimate_cents, reason=reason, insist=insist,
-                                until=until, now=chat.now)
+                                quantity=quantity, estimate_cents=high, estimate_low_cents=low, reason=reason,
+                                insist=insist, until=until, now=chat.now)
         decision, request = result.decision, result.request
         if decision.outcome == "already_on_it":
             return ItemRequested(
                 outcome="already_on_it", request_id=None, item=_named(chat, item_id, description),
-                paid_back_up_to=None, until=None, usual_time=False, reasons=[], reason_given=reason.strip() or None,
+                paid_back_up_to=None, until=None, usual_time=False, reasons=[], price=None,
+                reason_given=reason.strip() or None,
                 already_getting_it=[OnItBy(member=chat.session.get(Member, r.member_id).name, until=when(r.on_it_until),
                                            request_id=r.id) for r in decision.on_it]).model_dump_json()
         confirmed = decision.outcome == "confirmed"
@@ -199,7 +209,9 @@ class ActionAgent(ChatAgent):
             outcome=decision.outcome, request_id=request.id, item=thing(chat.session, request),
             paid_back_up_to=cents_to_str(request.cap_cents) if confirmed else None,
             until=when(request.on_it_until) if confirmed else None, usual_time=confirmed and until is None,
-            reasons=[] if confirmed else list(decision.reasons), reason_given=request.reason or None,
+            reasons=[] if confirmed else list(decision.reasons),
+            price=range_to_str(request.estimate_low_cents, request.estimate_cents) if request.estimate_cents else None,
+            reason_given=request.reason or None,
             already_getting_it=[]).model_dump_json()
 
     def change_time(self, request_id: int, when_said: str, runtime: ToolRuntime[Chat]) -> str:
