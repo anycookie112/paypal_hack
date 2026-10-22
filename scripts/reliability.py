@@ -22,7 +22,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,9 +47,21 @@ JPG = b"\xff\xd8\xff\xe0"
 
 @dataclass
 class Run:
-    """One run's database session and what the checks need to remember between turns."""
+    """One run's database session, its story clock, and what the checks need to remember between turns."""
     session: Session
+    start: datetime
     gloves_request: int | None = None
+
+    def at(self, minutes: int) -> datetime:
+        return self.start + timedelta(minutes=minutes)
+
+
+# The story's clock: minutes after 07:20 (today, UTC) when each turn happens. Every message, purchase and answer gets
+# its story time, so they're minutes apart as in real use: run back to back, they all shared one minute, and nothing
+# showed that Priya bought the gloves after the AI said she was getting them.
+STORY = {"gloves": 0, "by 11": 1, "marco gloves": 4, "table": 10, "table reason": 12,
+         "where gloves": 50, "budget": 55, "ladder": 60, "ladder price": 62}
+BOUGHT, ASKED, ANSWERED = 25, 35, 40  # outside the chat, between "table reason" and "where gloves"
 
 
 Check = Callable[[Run, str, datetime], str | None]  # the reply and when the turn started -> what's wrong, or None
@@ -157,10 +169,11 @@ def outside_the_chat(run: Run) -> None:
     are (the feed), Priya answers (her home page)."""
     priya, marco = person(run, "Priya"), person(run, "Marco")
     claim = submit_claim(run.session, priya, run.gloves_request, receipt=Upload(JPG + b" receipt", "r.jpg"),
-                         store="Riverside Hardware", receipt_date=utcnow().date(), total_cents=18_40,
-                         photo=Upload(JPG + b" shelf", "p.jpg")).claim
-    question = payouts.ask_buyer(run.session, claim.id, marco, "The gloves aren't in the supply box")
-    payouts.answer_question(run.session, question.id, priya, "On the shelf by the door")
+                         store="Riverside Hardware", receipt_date=run.start.date(), total_cents=18_40,
+                         photo=Upload(JPG + b" shelf", "p.jpg"), now=run.at(BOUGHT)).claim
+    question = payouts.ask_buyer(run.session, claim.id, marco, "The gloves aren't in the supply box",
+                                 now=run.at(ASKED))
+    payouts.answer_question(run.session, question.id, priya, "On the shelf by the door", now=run.at(ANSWERED))
 
 
 TURNS: list[tuple[str, str, str, Check]] = [
@@ -200,14 +213,14 @@ async def one_run(number: int, agent) -> list[TurnResult]:
     SQLModel.metadata.create_all(engine)
     results = []
     with Session(engine) as session:
+        run = Run(session, start=utcnow().replace(hour=7, minute=20, second=0, microsecond=0))
         with contextlib.redirect_stdout(io.StringIO()):
-            seed(session)
-        run = Run(session)
+            seed(session, now=run.start)
         for label, who, text, check in TURNS:
             seen = session.exec(select(AgentLog.id).order_by(AgentLog.id.desc())).first() or 0
-            started, clock = utcnow(), time.monotonic()
+            started, clock = run.at(STORY[label]), time.monotonic()
             try:
-                answer = await reply(session, person(run, who), text, agent=agent)
+                answer = await reply(session, person(run, who), text, agent=agent, now=started)
                 said, problem = answer.text, "the AI failed: " + answer.text if answer.failed else None
             except Exception as exc:  # a bug, not the model: record it and stop this run
                 said, problem = "", f"crashed: {type(exc).__name__}: {exc}"

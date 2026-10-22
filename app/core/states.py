@@ -109,12 +109,16 @@ class Moved:
     why: str             # what made it move ("they handed in the receipt"); empty when it's private
 
     def __str__(self) -> str:
+        return f"{self.at:%H:%M} UTC {self.member}'s {self.change()}"
+
+    def change(self) -> str:
+        """The move without its time and whose it is: "Gloves (request 6): getting it → bought (they handed in the
+        receipt)"."""
         states = _TABLES[self.kind][0]
         before = states.get(self.from_status, "new")
         why = f" ({self.why})" if self.why else ""
         noun = "receipt for " if self.kind == "claim" else ""
-        return (f"{self.at:%H:%M} UTC {self.member}'s {noun}{self.what} ({self.kind} {self.record_id}): {before} → "
-                f"{states[self.to_status]}{why}")
+        return f"{noun}{self.what} ({self.kind} {self.record_id}): {before} → {states[self.to_status]}{why}"
 
 
 def moves_since(session: Session, viewer: Member, since: datetime, *, limit: int = 10) -> list[Moved]:

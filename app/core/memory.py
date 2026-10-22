@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from pydantic_core import to_jsonable_python
 from sqlmodel import Session, select
 
-from app.core import settings
+from app.core import settings, states
 from app.core.decisions import ACCEPTED_CLAIMS, bought_too_soon, committed_cents, expire_stale, last_purchase
 from app.core.requests import thing
 from app.models import (AgentLog, Category, Claim, Conversation, Group, Item, Member, Message, Report, Request,
@@ -255,6 +255,34 @@ def questions_for(session: Session, member: Member) -> list[OpenQuestion]:
                          r.text, r.created_at) for r, c in rows]
 
 
+@dataclass
+class Done:
+    """One thing a member did, or that happened to their request or receipt."""
+    at: datetime
+    member: str
+    text: str     # "Gloves (request 6): getting it → bought (they handed in the receipt)"
+
+
+def recent_activity(session: Session, viewer: Member, since: datetime, *, limit: int = 40) -> list[Done]:
+    """What each person in the viewer's group did after `since`, oldest first: their requests and receipts moving
+    (only what the viewer may see, app/core/states.py), and questions about a purchase, asked and answered (only
+    between the two of them, and for the PICs). Formal reports are private and never listed."""
+    done = [Done(m.at, m.member, m.change()) for m in states.moves_since(session, viewer, since, limit=limit)]
+    questions = session.exec(select(Report, Claim).join(Claim, Report.claim_id == Claim.id).where(
+        Report.group_id == viewer.group_id, Report.kind == "question",
+        (Report.created_at > since) | (Report.answered_at > since))).all()
+    for question, claim in questions:
+        if not (viewer.id in (question.member_id, claim.member_id) or viewer.can_approve):
+            continue
+        asker, buyer = session.get(Member, question.member_id).name, session.get(Member, claim.member_id).name
+        what = thing(session, session.get(Request, claim.request_id))
+        if question.created_at > since:
+            done.append(Done(question.created_at, asker, f"asked {buyer} about the {what}: \"{question.text}\""))
+        if question.answered_at and question.answered_at > since:
+            done.append(Done(question.answered_at, buyer, f"answered {asker} about the {what}: \"{question.answer}\""))
+    return sorted(done, key=lambda d: d.at)[-limit:]
+
+
 def who_is_on_it(session: Session, group: Group, now: datetime | None = None) -> list[OnIt]:
     """Everyone getting something right now (confirmed, not bought or expired yet)."""
     now = now or utcnow()
@@ -353,11 +381,13 @@ def get_conversation(session: Session, member: Member, *, channel: str = "web", 
 
 
 def add_message(session: Session, conversation: Conversation, role: str, text: str,
-                cards: list[dict] | None = None) -> Message:
+                cards: list[dict] | None = None, now: datetime | None = None) -> Message:
     if role not in ("user", "assistant"):
         raise ValueError(f"role must be user or assistant, not {role!r}")
-    message = Message(conversation_id=conversation.id, role=role, text=text, cards_json=json.dumps(cards or []))
-    conversation.updated_at = utcnow()
+    now = now or utcnow()
+    message = Message(conversation_id=conversation.id, role=role, text=text, cards_json=json.dumps(cards or []),
+                      created_at=now)
+    conversation.updated_at = now
     session.add_all([message, conversation])
     session.commit()
     session.refresh(message)

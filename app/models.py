@@ -198,6 +198,7 @@ class Report(SQLModel, table=True):
     text: str
     checked: str = ""         # report: what they checked first ("the supply box, asked Priya")
     answer: str = ""          # question: the buyer's answer
+    answered_at: datetime | None = None
     status: str = "open"      # open | answered | resolved
     resolution: str = ""
     created_at: datetime = Field(default_factory=utcnow)

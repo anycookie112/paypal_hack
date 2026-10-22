@@ -32,7 +32,7 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - React + HeroUI: the "View as" switcher (`?as=sam`), an Items page and a Settings page (read-only for all but the
   treasurer).
 
-**Tests:** 230, all passing.
+**Tests:** 231, all passing.
 
 ## Done since: prompts v4 and v5 (2026-10-15)
 
@@ -129,6 +129,19 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
   10 runs: 89/90; both ladder turns 10/10. One "where gloves" reply said "I was wrong earlier" again (v8/v10: 0/10).
 - **New column** (`request.estimate_low_cents`): `uv run python scripts/seed_demo.py --reset` (or the Lab's reset).
 
+## Done since: what each person did, and when (2026-10-22)
+
+- **`<people>`** in the coordinator's `<chat_context>` (replaces `<since_your_last_reply>`): what each person did in
+  the last 24 hours, with times, written by code (`memory.recent_activity`): their requests and receipts moving (with
+  why, only what the member may see) and questions about a purchase asked and answered (only for the two of them and
+  the PICs). It says when the AI last replied.
+- The member's messages reach the AI with their time ("[07:22] …"); the AI's replies don't (so it doesn't copy them).
+- Answers record when they were given (`report.answered_at`, **new column**: reset the demo database).
+- `scripts/reliability.py` runs on a story clock (07:20 onwards, realistic gaps): back to back, every message shared
+  one minute, so nothing showed Priya bought the gloves after the AI said she was getting them.
+- **Coordinator v12.** 10 runs: **90/90**; "where gloves" 10/10, now 1 model call and 2.0 s (was 4 calls, ~7 s): the
+  answer is in `<people>`, no lookup. v12 and the clock changed together, so which one fixed it isn't separated.
+
 ## Found in the Haiku demo runs (to fix)
 
 - [x] The AI can't see answers to questions (now in the `purchase` record).
@@ -142,8 +155,10 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
       refused the reason and act retried (2–4 extra calls in 5 of 10 runs). Fixed in action v8 / coordinator v10.
 - [x] lookup copied only the category the member asked about from the `budgets` record, and the check sent it back
       (11 times in 10 runs). `budgets` now takes an optional category: 1 rejection in the next 10 runs (another kind).
-- [ ] "I was wrong earlier" is back on "where gloves" with coordinator v11: 1/10 in each of two runs (v8 and v10:
-      0/10 each). Too few to tell chance from v11; compare v10 and v11 on the same turns to find out.
+- [x] "I was wrong earlier" came back with coordinator v11 (1/10 in each of two runs): the test ran every message in
+      the same minute and the chat had no times. Fixed with `<people>`, timed messages and the story clock (v12: 0/10).
+- [ ] act sometimes writes its own reason on the table turn ("needed for the market stall" for "for the market
+      stall"), and the quote check sends it back: 2 times in 10 runs.
 
 ## Next (in order)
 

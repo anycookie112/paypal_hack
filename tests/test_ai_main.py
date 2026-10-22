@@ -48,7 +48,9 @@ def test_a_message_end_to_end(session, group):
     prompt = desk_seen[0][0].content
     assert "Member: Priya (member). Now: Sat 17 Oct, 08:40 UTC.\n\n<member>\nPriya (member)." in prompt
     assert "</member>\n\n<items>" in prompt
-    assert prompt.endswith("</items>\n</chat_context>")
+    assert prompt.endswith("</items>\n\n<people>\nWhat each person in the group did in the last 24 hours, oldest "
+                           "first, from the group's records. Times are UTC.\nNobody did anything.\n</people>\n"
+                           "</chat_context>")
     assert "<available>" in prompt and "- Gloves (item_id 1; also called work gloves" in prompt
     assert "<finish>" not in prompt  # the coordinator answers in text
     act_said = json.loads(desk_seen[1][-1].content)  # typed fields, checked against what get_item returned
@@ -79,7 +81,8 @@ def test_follow_ups_see_the_conversation(session, group):
     asyncio.run(reply(session, priya, "We're out of gloves", agent=Coordinator(model=first), now=NOW))
     second, seen = scripted("Got it.")
     asyncio.run(reply(session, priya, "By 1 pm", agent=Coordinator(model=second), now=NOW))
-    assert [m.content for m in seen[0][1:]] == ["We're out of gloves", "When will you get them?", "By 1 pm"]
+    assert [m.content for m in seen[0][1:]] == [  # the member's messages say when they were sent
+        "[08:40] We're out of gloves", "When will you get them?", "[08:40] By 1 pm"]
 
 
 def test_when_the_coordinator_fails_the_member_gets_an_apology(session, group):
@@ -118,17 +121,12 @@ def test_an_apology_says_when_something_already_happened(session, group):
     assert session.exec(select(Request)).one().status == "on_it"
 
 
-def test_the_coordinator_hears_what_moved_since_its_last_reply(session, group):
-    """A live run told Marco "I was wrong" about gloves Priya had bought after it spoke: nothing told it they had
-    moved since."""
+def test_the_coordinator_sees_what_each_person_did_and_when(session, group):
+    """A live run told Marco "I was wrong" about gloves Priya had bought after it spoke: the chat had no times, and
+    nothing showed that her buying them came after."""
     marco = member(session, "Marco")
-    first, seen = scripted("Priya is getting them.")
+    first, _ = scripted("Priya is getting them.")
     asyncio.run(reply(session, marco, "Is anyone getting gloves?", agent=Coordinator(model=first), now=NOW))
-    assert seen[0][0].content.endswith("</items>\n</chat_context>")  # nothing said yet: nothing moved since
-    said = session.exec(select(Message).where(Message.role == "assistant")).one()
-    said.created_at = NOW  # the reply's time, on the test's clock
-    session.add(said)
-    session.commit()
     gloves = tell(session, "Priya", "Gloves", now=NOW + timedelta(minutes=1)).request
 
     second, seen = scripted("She's on it.")
@@ -136,7 +134,10 @@ def test_the_coordinator_hears_what_moved_since_its_last_reply(session, group):
     prompt = seen[0][0].content
     assert prompt.index("\n<lifecycle>\n") < prompt.index("\n<chat_context>\n")  # fixed, so before the run's facts
     assert prompt.endswith(
-        "<since_your_last_reply>\nYour replies were true when you sent them. What moved in the group since your last "
-        "reply (08:40 UTC), oldest first:\n"
-        f"- 08:41 UTC Priya's Gloves (request {gloves.id}): new → getting it (the rules confirmed it)\n"
-        "</since_your_last_reply>\n</chat_context>")
+        "<people>\nWhat each person in the group did in the last 24 hours, oldest first, from the group's records. "
+        "Times are UTC.\nYour last reply in this chat was at 08:40: anything after it is news to Marco. Each of your "
+        "replies was true when you sent it.\n"
+        f"- Priya: 08:41 Gloves (request {gloves.id}): new → getting it (the rules confirmed it)\n"
+        "</people>\n</chat_context>")
+    assert [m.content for m in seen[0][1:]] == [  # Marco's messages with their times; the reply between them
+        "[08:40] Is anyone getting gloves?", "Priya is getting them.", "[08:42] And now?"]

@@ -6,7 +6,7 @@ DEMO_PAYPAL_EMAILS=marco@...,dana@...,sam@... sets the others. Without them, pay
 """
 
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlmodel import Session, select
 
@@ -34,7 +34,7 @@ def paypal_emails() -> dict[str, str]:
     return emails
 
 
-def seed(session: Session) -> None:
+def seed(session: Session, now: datetime | None = None) -> None:
     group = create_group(session, "Riverside Volunteers")
     emails = paypal_emails()
     members = {}
@@ -44,7 +44,7 @@ def seed(session: Session) -> None:
         session.add(members[name])
     session.commit()
 
-    now = utcnow()
+    now = now or utcnow()
     for who, what, total, days_ago in HISTORY:
         buyer = members[who]
         item = session.exec(select(Item).where(Item.group_id == group.id, Item.name == what)).one()

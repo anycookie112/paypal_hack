@@ -100,7 +100,8 @@ def ask_buyer(session: Session, claim_id: int, by: Member, text: str, now: datet
     return question
 
 
-def answer_question(session: Session, report_id: int, by: Member, answer: str) -> Report:
+def answer_question(session: Session, report_id: int, by: Member, answer: str,
+                    now: datetime | None = None) -> Report:
     """The buyer answers a question about their purchase; whoever asked is told."""
     question = session.get(Report, report_id)
     if question is None or question.group_id != by.group_id or question.kind != "question":
@@ -110,7 +111,7 @@ def answer_question(session: Session, report_id: int, by: Member, answer: str) -
         raise ActionError("Only the person who bought it can answer.")
     if not answer.strip():
         raise ActionError("Say where it is.")
-    question.answer, question.status = answer.strip(), "answered"
+    question.answer, question.status, question.answered_at = answer.strip(), "answered", now or utcnow()
     session.add(question)
     what = thing(session, session.get(Request, claim.request_id))
     notify(session, session.get(Member, question.member_id), "question_answered",

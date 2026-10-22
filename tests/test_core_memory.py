@@ -8,7 +8,7 @@ from sqlmodel import select
 
 from app.core import memory
 from app.core.payouts import answer_question, ask_buyer
-from app.models import AgentLog, Conversation
+from app.models import AgentLog, Conversation, Member
 from tests.demo import NOW, item, member, past_purchase, tell
 
 
@@ -106,3 +106,28 @@ def test_questions_about_my_purchases(session, group):
     assert (question.item, question.asked_by, question.text) == ("Gloves", "Marco", "Not in the supply box")
     answer_question(session, question.question_id, member(session, "Priya"), "In the van")
     assert memory.questions_for(session, member(session, "Priya")) == []
+
+
+def test_what_each_person_did_recently(session, group):
+    """Requests moving are for the whole group; a question and its answer only for the two of them and the PICs."""
+    claim = past_purchase(session, "Priya", "Gloves", 18_40, days_ago=1)
+    table = tell(session, "Marco", description="Folding table", estimate_cents=40_00,
+                 now=NOW + timedelta(minutes=1)).request
+    question = ask_buyer(session, claim.id, member(session, "Marco"), "Not in the supply box",
+                         now=NOW + timedelta(minutes=2))
+    answer_question(session, question.id, member(session, "Priya"), "On the shelf by the door",
+                    now=NOW + timedelta(minutes=3))
+
+    def seen_by(name):
+        return [(d.at.minute - NOW.minute, d.member, d.text)
+                for d in memory.recent_activity(session, member(session, name), NOW)]
+    everything = [
+        (1, "Marco", f"Folding table (request {table.id}): new → waiting for a PIC (it needs a PIC's yes)"),
+        (2, "Marco", 'asked Priya about the Gloves: "Not in the supply box"'),
+        (3, "Priya", 'answered Marco about the Gloves: "On the shelf by the door"')]
+    assert seen_by("Marco") == seen_by("Priya") == seen_by("Dana") == everything  # Dana is a PIC
+    assert seen_by("Sam") == everything  # the treasurer too
+    session.add(Member(group_id=group.id, name="Lee", email="lee@example.com", role="member"))
+    session.commit()
+    assert seen_by("Lee") == everything[:1]  # not their question
+    assert memory.recent_activity(session, member(session, "Marco"), NOW + timedelta(minutes=2))[0].member == "Priya"
