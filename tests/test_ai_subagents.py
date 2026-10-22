@@ -363,6 +363,16 @@ def test_lookup_cant_report_a_fact_no_tool_returned(session, group):
     assert result.facts[0].type == "budgets" and result.facts[0].categories  # the real one, with its categories
 
 
+def test_one_categorys_budget(session, group):
+    """A live run copied only the category it was asked about, and the check sent it back: now the tool does that."""
+    model, results = scripted(call("budgets", {"category": "Bins"}), call("budgets", {"category": "supplies"}),
+                              found())
+    result = ask(LookupAgent(model=model), session, "Dana")
+    assert results[0].status == "error" and results[0].content.startswith('No category called "Bins". The categories:')
+    assert [c.name for c in result.facts[0].categories] == ["Supplies"]
+    assert result.facts[0].overall.name == group.name
+
+
 def test_lookups_closest_items_must_be_real(session, group):
     model, results = scripted(call("LookupResult", {"status": "not_found", "closest_item_ids": [999]}),
                               nothing_found())

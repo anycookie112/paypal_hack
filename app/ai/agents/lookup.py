@@ -172,12 +172,22 @@ class LookupAgent(ChatAgent):
             last_bought=when(history.last_bought) if history.last_bought else None, last_buyer=history.last_buyer,
             average_days_between=history.observed_days).model_dump_json()
 
-    def budgets(self, runtime: ToolRuntime[Chat]) -> str:
-        """This month's budget for the group and each category: the budget, what's spent or promised, what's left."""
+    def budgets(self, runtime: ToolRuntime[Chat], category: str = "") -> str:
+        """This month's budget for the group and its categories: the budget, what's spent or promised, what's left.
+
+        Args:
+            category: One category's name, when only that one is needed; empty for every category. The group's
+                overall budget always comes back too.
+        """
         chat = runtime.context
         status = memory.group_status(chat.session, chat.group, chat.time)
-        return Budgets(overall=_line(status.overall),
-                       categories=[_line(b) for b in status.categories]).model_dump_json()
+        lines = status.categories
+        if category.strip():  # a live run dropped the categories it wasn't asked about, and the copy check refused it
+            lines = [b for b in lines if b.name.lower() == category.strip().lower()]
+            if not lines:
+                raise ActionError(f"No category called \"{category}\". The categories: "
+                                  f"{', '.join(b.name for b in status.categories)}.")
+        return Budgets(overall=_line(status.overall), categories=[_line(b) for b in lines]).model_dump_json()
 
     def group_rules(self, runtime: ToolRuntime[Chat]) -> str:
         """The group's settings in plain words, and who the PICs (approvers) and the treasurer are."""

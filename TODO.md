@@ -32,7 +32,7 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - React + HeroUI: the "View as" switcher (`?as=sam`), an Items page and a Settings page (read-only for all but the
   treasurer).
 
-**Tests:** 229, all passing.
+**Tests:** 230, all passing.
 
 ## Done since: prompts v4 and v5 (2026-10-15)
 
@@ -140,9 +140,10 @@ Due **Nov 12, 2026**. The full plan is in [docs/SPEC.md](docs/SPEC.md) §15; how
 - [x] One clean run isn't proof: `scripts/reliability.py` (v8: 70/70).
 - [x] The coordinator retold the member in its briefs ("they need it to show the flyers"), so act's quote check
       refused the reason and act retried (2–4 extra calls in 5 of 10 runs). Fixed in action v8 / coordinator v10.
-- [ ] lookup copies only the category the member asked about from the `budgets` record (dropping the rest), and the
-      check sends it back: 11 times in the latest 10 runs (budget and ladder turns). Idea: `budgets` takes an
-      optional category, so the tool returns only what was asked and the copy can be exact.
+- [x] lookup copied only the category the member asked about from the `budgets` record, and the check sent it back
+      (11 times in 10 runs). `budgets` now takes an optional category: 1 rejection in the next 10 runs (another kind).
+- [ ] "I was wrong earlier" is back on "where gloves" with coordinator v11: 1/10 in each of two runs (v8 and v10:
+      0/10 each). Too few to tell chance from v11; compare v10 and v11 on the same turns to find out.
 
 ## Next (in order)
 
